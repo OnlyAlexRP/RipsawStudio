@@ -8,6 +8,10 @@ Instant Replay keeps the last few minutes of your gameplay running in the backgr
 
 No wizard, no bloated suite of tools you'll never open. Ripsaw Studio is built around one job: getting your capture card's feed on screen and into a recording, as directly as possible. Windows 10 and 11.
 
+## Download
+
+Go to the [Releases page](https://github.com/OnlyAlexRP/RipsawStudio/releases) and download **RipsawStudio_v1.0.zip** from the latest release.
+
 ## Website
 
 More info: [ripsawstudio.com](http://ripsawstudio.com)
