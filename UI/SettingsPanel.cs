@@ -42,11 +42,13 @@ internal sealed class SettingsPanel : Panel
     private readonly Slider _brightness = new() { Bipolar = true };
     private readonly Slider _contrast = new();
     private readonly Slider _saturation = new();
+    private readonly Slider _artifactSmoothing = new();
     private readonly Slider _volume = new();
     private readonly Slider _micVolume = new();
     private readonly Label _brightnessValue = new();
     private readonly Label _contrastValue = new();
     private readonly Label _saturationValue = new();
+    private readonly Label _artifactSmoothingValue = new();
     private readonly Label _volumeValue = new();
     private readonly Label _micVolumeValue = new();
 
@@ -296,6 +298,12 @@ internal sealed class SettingsPanel : Panel
             _saturationValue.Text = _settings.Saturation.ToString("0.00");
             Raise(PictureChanged);
         };
+        _artifactSmoothing.ValueChanged += (_, _) =>
+        {
+            _settings.ArtifactSmoothing = _artifactSmoothing.Value / 100f;
+            _artifactSmoothingValue.Text = _settings.ArtifactSmoothing.ToString("0.00");
+            Raise(PictureChanged);
+        };
         _volume.ValueChanged += (_, _) =>
         {
             _settings.Volume = _volume.Value / 100f;
@@ -428,6 +436,8 @@ internal sealed class SettingsPanel : Panel
         picture.AddSlider("Brightness", Icon.Sun, _brightness, _brightnessValue);
         picture.AddSlider("Contrast", Icon.Contrast, _contrast, _contrastValue);
         picture.AddSlider("Saturation", Icon.Droplet, _saturation, _saturationValue);
+        picture.AddSlider("Smoothing Pass", Icon.Sliders, _artifactSmoothing, _artifactSmoothingValue);
+        picture.AddHint("Not needed on a decent card, but if you're using a low-end capture card\nthat produces blocky/smeared pixels, try this between 0.25 and 0.50 at most.\nPush it any further and you will ruin fine detail in every game you play.");
         left.Add(picture.Finish());
 
         // --- GRAPHICS
@@ -612,6 +622,20 @@ internal sealed class SettingsPanel : Panel
         LayoutColumns(page, left, right);
     }
 
+    /// <summary>
+    /// .NET always stores an assembly version as four components, so a csproj
+    /// &lt;Version&gt;1.1&lt;/Version&gt; still reports as "1.1.0.0" through Version.ToString().
+    /// This keeps Major.Minor always, and only appends Build/Revision when they're non-zero,
+    /// so "1.1" stays "1.1" but "1.1.3" or "1.1.3.2" still show in full.
+    /// </summary>
+    private static string FormatVersion(Version? version)
+    {
+        if (version is null) return "unknown";
+        if (version.Revision > 0) return version.ToString(4);
+        if (version.Build > 0) return version.ToString(3);
+        return version.ToString(2);
+    }
+
     private void BuildAbout(int columnWidth)
     {
         var page = NewPage(Page.About);
@@ -620,7 +644,7 @@ internal sealed class SettingsPanel : Panel
 
         var about = new Card("Ripsaw Studio", Icon.Info, columnWidth);
         about.AddText("A low-latency capture viewer and recorder for Windows.");
-        about.AddText($"Version {typeof(SettingsPanel).Assembly.GetName().Version}", dim: true);
+        about.AddText($"Version {FormatVersion(typeof(SettingsPanel).Assembly.GetName().Version)}", dim: true);
         about.AddSpace(6);
         about.AddText("Software for viewing and recording video from generic game capture cards.\n" +
                       "If your capture card's hardware causes frame drops or occasional stuttering,\n" +
@@ -798,6 +822,7 @@ internal sealed class SettingsPanel : Panel
         _settings.Brightness = 0f;
         _settings.Contrast = 1f;
         _settings.Saturation = 1f;
+        _settings.ArtifactSmoothing = 0f;
         _settings.Range = RangeMode.Auto;
         _settings.Matrix = ColorMatrix.Auto;
         _settings.Aspect = AspectMode.Auto;
@@ -944,11 +969,13 @@ internal sealed class SettingsPanel : Panel
         _brightness.SetValueSilently((int)Math.Clamp(_settings.Brightness * 100, -100, 100));
         _contrast.SetValueSilently((int)Math.Clamp(_settings.Contrast * 100, 0, 200));
         _saturation.SetValueSilently((int)Math.Clamp(_settings.Saturation * 100, 0, 200));
+        _artifactSmoothing.SetValueSilently((int)Math.Clamp(_settings.ArtifactSmoothing * 100, 0, 100));
         _volume.SetValueSilently((int)Math.Clamp(_settings.Volume * 100, 0, 200));
         _micVolume.SetValueSilently((int)Math.Clamp(_settings.MicVolume * 100, 0, 200));
         _brightnessValue.Text = _settings.Brightness.ToString("0.00");
         _contrastValue.Text = _settings.Contrast.ToString("0.00");
         _saturationValue.Text = _settings.Saturation.ToString("0.00");
+        _artifactSmoothingValue.Text = _settings.ArtifactSmoothing.ToString("0.00");
         _volumeValue.Text = $"{_volume.Value}%";
         _micVolumeValue.Text = $"{_micVolume.Value}%";
 

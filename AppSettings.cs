@@ -40,6 +40,7 @@ public sealed class ProfileData
     public float Saturation { get; set; } = 1f;
     public RangeMode Range { get; set; } = RangeMode.Auto;
     public ColorMatrix Matrix { get; set; } = ColorMatrix.Auto;
+    public float ArtifactSmoothing { get; set; }
 
     public int VideoBitrateKbps { get; set; } = 25_000;
     public int AudioBitrateKbps { get; set; } = 192;
@@ -103,6 +104,7 @@ public sealed class AppSettings
     public float Saturation { get; set; } = 1f;
     public RangeMode Range { get; set; } = RangeMode.Auto;
     public ColorMatrix Matrix { get; set; } = ColorMatrix.Auto;
+    public float ArtifactSmoothing { get; set; }
     public bool AlwaysOnTop { get; set; }
     public bool AutoStart { get; set; } = true;
 
@@ -171,6 +173,7 @@ public sealed class AppSettings
         Saturation = d.Saturation;
         Range = d.Range;
         Matrix = d.Matrix;
+        ArtifactSmoothing = d.ArtifactSmoothing;
 
         VideoBitrateKbps = d.VideoBitrateKbps;
         AudioBitrateKbps = d.AudioBitrateKbps;
@@ -189,6 +192,7 @@ public sealed class AppSettings
         Saturation = Saturation,
         Range = Range,
         Matrix = Matrix,
+        ArtifactSmoothing = ArtifactSmoothing,
     };
 
     // ---- profile plumbing ----------------------------------------------------------------

@@ -54,7 +54,9 @@ internal sealed class Presenter : IDisposable
     private PictureSettings _picture = new();
 
     private ID3D11Texture2D? _backBuffer;
-    private ID3D11VideoProcessorOutputView? _backBufferView;
+    private ID3D11RenderTargetView? _backBufferRtv;
+    private ID3D11VideoProcessorOutputView? _scratchVpView;
+    private DeblockPass? _deblock;
 
     private ID3D11Texture2D? _uploadStaging;   // software-path scratch
     private ID3D11Texture2D? _uploadTexture;
@@ -158,6 +160,8 @@ internal sealed class Presenter : IDisposable
         _deviceRcw = Marshal.GetObjectForIUnknown(_device.NativePointer);
         MfHelpers.Check(manager.ResetDevice(_deviceRcw, resetToken), "IMFDXGIDeviceManager::ResetDevice");
         DeviceManager = manager;
+
+        _deblock = new DeblockPass(_device, _context);
     }
 
     /// <summary>Applies picture adjustments. Cheap enough to call whenever a slider moves.</summary>
@@ -396,7 +400,7 @@ internal sealed class Presenter : IDisposable
         try
         {
             EnsureProcessor(frameWidth, frameHeight);
-            var outputView = GetBackBufferView();
+            var outputView = GetScratchVpView();
             var inputView = GetInputView(texture, subresource);
 
             // These are driver state changes, and they only differ when the window or the
@@ -420,6 +424,8 @@ internal sealed class Presenter : IDisposable
 
             _blitStreams[0] = new VideoProcessorStream { Enable = true, InputSurface = inputView };
             _videoContext.VideoProcessorBlt(_processor!, outputView, 0, 1, _blitStreams);
+
+            _deblock!.Run(GetBackBufferRtv(), _backBufferWidth, _backBufferHeight, _picture.ArtifactSmoothing);
 
             var presentFlags = (!VSync && _tearingSupported) ? PresentFlags.AllowTearing : PresentFlags.None;
             _swapChain.Present(VSync ? 1u : 0u, presentFlags);
@@ -580,22 +586,34 @@ internal sealed class Presenter : IDisposable
     }
 
     /// <summary>
-    /// The flip-model back buffer at index 0 is the same texture every frame, so its
-    /// output view is built once and only thrown away when the swap chain is resized.
+    /// The video processor now blits into <see cref="DeblockPass"/>'s scratch texture instead
+    /// of the swap chain's back buffer directly - the deblock shader reads that scratch
+    /// texture and writes the real back buffer as a second, cheap full-screen pass. Both
+    /// views are the same size as the window, so both are rebuilt together on resize.
     /// </summary>
-    private ID3D11VideoProcessorOutputView GetBackBufferView()
+    private ID3D11VideoProcessorOutputView GetScratchVpView()
     {
-        if (_backBufferView is not null) return _backBufferView;
-        _backBuffer = _swapChain!.GetBuffer<ID3D11Texture2D>(0);
-        _backBufferView = _videoDevice.CreateVideoProcessorOutputView(_backBuffer, _vpEnum!,
+        if (_scratchVpView is not null) return _scratchVpView;
+        _deblock!.GetSourceTarget(_backBufferWidth, _backBufferHeight, out var scratchTexture);
+        _scratchVpView = _videoDevice.CreateVideoProcessorOutputView(scratchTexture, _vpEnum!,
             new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D });
-        return _backBufferView;
+        return _scratchVpView;
+    }
+
+    private ID3D11RenderTargetView GetBackBufferRtv()
+    {
+        if (_backBufferRtv is not null) return _backBufferRtv;
+        _backBuffer = _swapChain!.GetBuffer<ID3D11Texture2D>(0);
+        _backBufferRtv = _device.CreateRenderTargetView(_backBuffer);
+        return _backBufferRtv;
     }
 
     private void ReleaseBackBufferView()
     {
-        _backBufferView?.Dispose();
-        _backBufferView = null;
+        _scratchVpView?.Dispose();
+        _scratchVpView = null;
+        _backBufferRtv?.Dispose();
+        _backBufferRtv = null;
         _backBuffer?.Dispose();
         _backBuffer = null;
     }
@@ -726,6 +744,7 @@ internal sealed class Presenter : IDisposable
     public void Dispose()
     {
         ClearInputViews();
+        _deblock?.Dispose();
         _processor?.Dispose();
         _vpEnum?.Dispose();
         _uploadTexture?.Dispose();

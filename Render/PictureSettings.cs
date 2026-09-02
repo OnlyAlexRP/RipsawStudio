@@ -29,5 +29,12 @@ public sealed class PictureSettings
     public RangeMode Range { get; set; } = RangeMode.Auto;
     public ColorMatrix Matrix { get; set; } = ColorMatrix.Auto;
 
+    /// <summary>
+    /// 0 to 1, neutral 0. An edge-aware smoothing pass that runs after scaling, to take the
+    /// edge off blocky/mosquito artifacts from a lossy source (e.g. a capture card's own
+    /// hardware encoder) without blurring real detail. See <see cref="DeblockPass"/>.
+    /// </summary>
+    public float ArtifactSmoothing { get; set; }
+
     public PictureSettings Clone() => (PictureSettings)MemberwiseClone();
 }
