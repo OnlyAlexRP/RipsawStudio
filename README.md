@@ -19,3 +19,8 @@ More info: [ripsawstudio.com](http://ripsawstudio.com)
 ## Requirements
 
 Windows 10 / 11
+
+# Information required
+
+With the use and assistance of Claude AI for code restructuring prior to publication and for optimization.
+
