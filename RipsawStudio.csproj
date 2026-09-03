@@ -15,7 +15,7 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <AssemblyName>RipsawStudio</AssemblyName>
     <RootNamespace>RipsawStudio</RootNamespace>
-    <Version>1.1</Version>
+    <Version>1.3</Version>
     <!-- Lets this project be built from Linux/macOS as well as Windows. -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
@@ -30,6 +30,15 @@
 
   <ItemGroup Condition="Exists('appicon.ico')">
     <EmbeddedResource Include="appicon.ico" LogicalName="RipsawStudio.appicon.ico" />
+  </ItemGroup>
+
+  <!-- Menu-bar icon artwork, embedded so the exe stays a single file. See UI/Assets.cs. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\icon_capture.png" LogicalName="RipsawStudio.Assets.icon_capture.png" />
+    <EmbeddedResource Include="Assets\icon_recording.png" LogicalName="RipsawStudio.Assets.icon_recording.png" />
+    <EmbeddedResource Include="Assets\icon_keyboard.png" LogicalName="RipsawStudio.Assets.icon_keyboard.png" />
+    <EmbeddedResource Include="Assets\icon_general.png" LogicalName="RipsawStudio.Assets.icon_general.png" />
+    <EmbeddedResource Include="Assets\icon_about.png" LogicalName="RipsawStudio.Assets.icon_about.png" />
   </ItemGroup>
 
   <ItemGroup>
