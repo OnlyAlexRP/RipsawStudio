@@ -15,7 +15,7 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <AssemblyName>RipsawStudio</AssemblyName>
     <RootNamespace>RipsawStudio</RootNamespace>
-    <Version>1.3</Version>
+    <Version>1.2</Version>
     <!-- Lets this project be built from Linux/macOS as well as Windows. -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
