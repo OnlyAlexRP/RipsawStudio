@@ -17,6 +17,8 @@ public sealed class MainForm : Form
 
     private readonly VideoSurface _video = new();
     private readonly SettingsPanel _panel;
+    private readonly BarForm _bar = new();
+    private readonly ScrimForm _scrim = new();
     private readonly VolumeOverlay _volumeOverlay = new();
     private readonly ToastOverlay _toast = new();
     private readonly StatsOverlay _stats = new();
@@ -25,12 +27,14 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _cursorTimer = new() { Interval = 500 };
     private readonly System.Windows.Forms.Timer _relayout = new() { Interval = 160 };
     private readonly System.Windows.Forms.Timer _audioDebounce = new() { Interval = 300 };
-    private readonly System.Windows.Forms.Timer _slide = new() { Interval = 15 };
-    /// <summary>How far below its resting place the panel sits when closed.</summary>
-    private const int SlideDistance = 28;
-    private Rectangle _panelRest;
-    private double _slideOffset;
-    private double _slideTarget;
+    private readonly System.Windows.Forms.Timer _fade = new() { Interval = 15 };
+
+    /// <summary>Bar + backdrop visible (independent of whether a settings window is open).</summary>
+    private bool _menuOpen;
+    /// <summary>Which settings window is currently showing, or null when the menu is bar-only.</summary>
+    private Page? _openPage;
+    private double _chromeOpacity, _chromeTarget;
+    private double _panelOpacity, _panelTarget;
     private int _builtWidth;
 
     private DateTime _lastMouseMove = DateTime.UtcNow;
@@ -82,15 +86,25 @@ public sealed class MainForm : Form
         _video.Dock = DockStyle.Fill;
         _video.PlaceholderText = "Press Esc for settings";
         Controls.Add(_video);
-        Controls.Add(_panel);
         Controls.Add(_volumeOverlay);
         Controls.Add(_toast);
         Controls.Add(_stats);
         Controls.Add(_recordLight);
 
-        // Start where the panel belongs, so a restored-open panel does not slide on launch.
-        _slideOffset = _slideTarget = _settings.PanelOpen ? 0 : SlideDistance;
-        _panel.Visible = _settings.PanelOpen;
+        // The bar, backdrop and settings window are separate borderless owned windows rather
+        // than child controls - see the note on BarForm - so they are never added to Controls.
+        _panel.Owner = this;
+        _bar.Owner = this;
+        _scrim.Owner = this;
+        _bar.PageSelected += (_, page) => ToggleWindow(page);
+        _scrim.Clicked += (_, _) => SetMenuOpen(false);
+        _panel.PageShown += (_, page) => { _openPage = page; _bar.ActivePage = page; };
+
+        // Start already open if the menu was open on the last run - no fade on launch.
+        _menuOpen = _settings.PanelOpen;
+        _chromeOpacity = _chromeTarget = _menuOpen ? 1 : 0;
+        if (_menuOpen) _openPage = Page.Capture;
+        _panelOpacity = _panelTarget = _openPage is null ? 0 : 1;
 
         WirePanel();
         WireEngine();
@@ -101,13 +115,50 @@ public sealed class MainForm : Form
         // Laying the cards out again is not free, so it waits until a drag-resize settles.
         _relayout.Tick += (_, _) => { _relayout.Stop(); RebuildPanelIfNeeded(); };
         _audioDebounce.Tick += (_, _) => { _audioDebounce.Stop(); RestartAudio(); };
-        _slide.Tick += SlideTick;
+        _fade.Tick += FadeTick;
 
         LayoutOverlays();
+        if (_menuOpen)
+        {
+            _scrim.Opacity = ScrimForm.MaxOpacity;
+            _bar.Opacity = 1;
+            _scrim.Show();
+            _bar.Show();
+            _bar.BringToFront();
+            if (_openPage is { } page)
+            {
+                _panel.ShowPage(page);
+                _panel.Opacity = 1;
+                _panel.Show();
+                _panel.BringToFront();
+                _bar.BringToFront();
+                _bar.ActivePage = page;
+                // See the matching call in SetOpenPage: whichever of these owned windows was
+                // just Shown for the first time needs an explicit Activate(), or Windows treats
+                // the user's next click as activation-only and eats it - the click handler never
+                // sees it, so it takes a second click to actually do anything.
+                _panel.Activate();
+            }
+            else
+            {
+                _bar.Activate();
+            }
+        }
 
         _video.MouseMove += (_, _) => NoteMouseActivity();
         _video.MouseDoubleClick += (_, _) => ToggleFullscreen();
-        _video.MouseDown += (_, _) => { if (_panel.Visible) SetPanelOpen(false); };
+        _video.MouseDown += (_, _) => { if (_menuOpen) SetMenuOpen(false); };
+    }
+
+    /// <summary>
+    /// Lets the bar, backdrop and settings window - each its own top-level window - forward
+    /// keystrokes back into the same shortcut table MainForm itself uses, so a hotkey works
+    /// no matter which of them last had focus.
+    /// </summary>
+    internal bool DispatchShortcut(Keys keyData)
+    {
+        if (KeyCaptureButton.AnyCapturing) return false;
+        return _shortcuts.Lookup(keyData) is { } action && RunShortcut(action);
     }
 
     /// <summary>
@@ -219,7 +270,27 @@ public sealed class MainForm : Form
         _engine.VSync = _settings.VSync;
         _engine.Scaling = _settings.Scaling;
         _engine.Aspect = _settings.Aspect;
-        TopMost = _settings.AlwaysOnTop;
+        // Re-assigning TopMost - even to the same value - makes Windows reissue
+        // SetWindowPos(HWND_TOPMOST) for that window, which reorders the z-stack among
+        // topmost windows. Since this used to run on every settings change (not just when
+        // AlwaysOnTop itself changed), it silently shuffled the scrim above the panel,
+        // making the backdrop cover the menu and eat the next click as "clicked outside".
+        // Only touch TopMost - and only restore the stacking order - when the value
+        // genuinely changes. Guard on _bar.TopMost, the thing this block actually syncs -
+        // not on this form's own TopMost, which the constructor already set to the same
+        // value before the very first call here, which made that comparison a no-op and
+        // left _bar/_scrim/_panel never synced at all (invisible behind an always-on-top
+        // MainForm whenever AlwaysOnTop was true, which looked like the menu no longer
+        // opening).
+        if (_bar.TopMost != _settings.AlwaysOnTop)
+        {
+            TopMost = _settings.AlwaysOnTop;
+            _bar.TopMost = _scrim.TopMost = _panel.TopMost = _settings.AlwaysOnTop;
+            // Restore the stacking order TopMost reassignment just disturbed: scrim at the
+            // back, panel above it, bar above the panel - same order SetOpenPage establishes.
+            _panel.BringToFront();
+            _bar.BringToFront();
+        }
         _stats.SetVisible(_settings.ShowStatusOverlay);
         LayoutOverlays();
     }
@@ -270,18 +341,21 @@ public sealed class MainForm : Form
             _settings.WindowWidth = ClientSize.Width;
             _settings.WindowHeight = ClientSize.Height;
         }
-        _settings.PanelOpen = _panel.Visible;
+        _settings.PanelOpen = _menuOpen;
         _settings.Muted = _engine.Audio.Muted;
         _settings.MicMuted = _engine.Audio.MicMuted;
         _shortcuts.SaveInto(_settings);
         _settings.Save();
         _engine.Dispose();
 
-        foreach (var timer in new[] { _cursorTimer, _relayout, _audioDebounce, _slide })
+        foreach (var timer in new[] { _cursorTimer, _relayout, _audioDebounce, _fade })
         {
             timer.Stop();
             timer.Dispose();
         }
+        _panel.Dispose();
+        _bar.Dispose();
+        _scrim.Dispose();
     }
 
     private void Ui(Action action)
@@ -292,23 +366,33 @@ public sealed class MainForm : Form
         catch (InvalidOperationException) { /* handle went away between the check and the call */ }
     }
 
-    // ---- panel + overlay placement ----------------------------------------------------------
+    // ---- menu + overlay placement -------------------------------------------------------
 
     /// <summary>
-    /// The panel floats over the picture, centred, sized to the window. It is rebuilt only
-    /// when its width actually changes, because relaying out the cards is not free.
+    /// Positions the bar (top-left inset over the picture), the backdrop (covering the
+    /// picture exactly) and the settings window (centred), all as screen coordinates since
+    /// each is its own top-level window rather than a child control. The settings window is
+    /// rebuilt only when its width actually changes, because relaying out the cards is not free.
     /// </summary>
     private void LayoutOverlays()
     {
         int w = ClientSize.Width, h = ClientSize.Height;
 
+        var scrimBounds = RectangleToScreen(ClientRectangle);
+        _scrim.Bounds = scrimBounds;
+
+        const int Inset = 16;
+        const int PanelGap = 16;
+        var barTopLeft = PointToScreen(new Point(Inset, Inset));
+        _bar.Location = barTopLeft;
+        _bar.Size = BarForm.DesiredSize;
+
         int panelWidth = Math.Clamp(w - 72, 720, 1180);
         int panelHeight = Math.Clamp(h - 72, 420, 940);
-        _panelRest = new Rectangle((w - panelWidth) / 2, (h - panelHeight) / 2, panelWidth, panelHeight);
-        PositionPanel();
+        var panelTopLeft = PointToScreen(new Point(Inset, Inset + BarForm.DesiredSize.Height + PanelGap));
+        _panel.Bounds = new Rectangle(panelTopLeft, new Size(panelWidth, panelHeight));
         if (_builtWidth == 0) RebuildPanelIfNeeded();
         else if (_builtWidth != panelWidth) { _relayout.Stop(); _relayout.Start(); }
-        _panel.BringToFront();
 
         _volumeOverlay.Location = new Point((w - _volumeOverlay.Width) / 2, h - _volumeOverlay.Height - 28);
         _toast.SetBounds(16, h - _toast.Height - 16, Math.Clamp(w - 32, 160, 560), _toast.Height);
@@ -326,45 +410,113 @@ public sealed class MainForm : Form
         _panel.Build();
     }
 
-    private void PositionPanel() =>
-        _panel.SetBounds(_panelRest.X, _panelRest.Y + (int)Math.Round(_slideOffset),
-                         _panelRest.Width, _panelRest.Height);
-
-    /// <summary>
-    /// Slides the panel in from below and back out. A cross-fade would read better, but a
-    /// WinForms control has no opacity and a layered child window does not composite over
-    /// the swap chain - so the animation is movement, which always works.
-    /// Reversing mid-slide continues from wherever it had got to rather than snapping.
-    /// </summary>
-    private void SetPanelOpen(bool open)
+    /// <summary>Opens or closes the whole menu (backdrop + bar); closing also closes
+    /// whichever settings window was open.</summary>
+    private void SetMenuOpen(bool open)
     {
-        _slideTarget = open ? 0 : SlideDistance;
+        if (_menuOpen == open) return;
+        _menuOpen = open;
 
         if (open)
         {
-            if (!_panel.Visible) _slideOffset = SlideDistance;
-            PositionPanel();
-            _panel.Visible = true;
-            _panel.BringToFront();
+            LayoutOverlays();
+            if (!_scrim.Visible) { _scrim.Opacity = 0; _scrim.Show(); }
+            if (!_bar.Visible) { _bar.Opacity = 0; _bar.Show(); }
+            _bar.BringToFront();
+            // Show() alone doesn't reliably hand this owned window real OS focus - without this,
+            // the user's next click on a bar icon lands as an activate-only click that Windows
+            // eats before it ever reaches OnMouseDown, so the icon needs a second click to
+            // actually fire PageSelected. Cheap (one Win32 call) and only runs on the open
+            // transition, so it costs nothing while the menu sits closed.
+            _bar.Activate();
             ShowCursorIfHidden();
         }
-        _slide.Start();
+        else
+        {
+            SetOpenPage(null);
+        }
+        _chromeTarget = open ? 1 : 0;
+        _fade.Start();
     }
 
-    private void SlideTick(object? sender, EventArgs e)
+    /// <summary>Clicking a bar icon: opens its window, or closes it if it was already the
+    /// one showing. The bar and backdrop stay put either way.</summary>
+    private void ToggleWindow(Page page)
     {
-        // Ease out: most of the travel happens early, so it settles rather than stopping dead.
-        _slideOffset += (_slideTarget - _slideOffset) * 0.34;
-        if (Math.Abs(_slideTarget - _slideOffset) < 0.6) _slideOffset = _slideTarget;
-        PositionPanel();
+        if (!_menuOpen) SetMenuOpen(true);
+        SetOpenPage(_openPage == page ? null : page);
+    }
 
-        if (Math.Abs(_slideTarget - _slideOffset) > 0.001) return;
+    private void SetOpenPage(Page? page)
+    {
+        // ShowPage below fires PageShown synchronously, and MainForm's own handler for that
+        // event updates _openPage as a side effect - so it must be read here, before that
+        // call, or this always sees the page we're about to open instead of the one we're
+        // replacing, and the panel's first Show() below never runs.
+        bool wasClosed = _openPage is null;
+        if (page is { } shown)
+        {
+            _panel.ShowPage(shown);
+            if (wasClosed)
+            {
+                LayoutOverlays();
+                if (!_panel.Visible) { _panel.Opacity = 0; _panel.Show(); }
+                _panel.BringToFront();
+                _bar.BringToFront();
+                // Same reasoning as SetMenuOpen's _bar.Activate(): the panel is a freshly shown
+                // owned window too, so its first click needs this or it's swallowed as an
+                // activation click instead of reaching whatever control the user meant to hit.
+                _panel.Activate();
+            }
+            _panelTarget = 1;
+        }
+        else
+        {
+            _panelTarget = 0;
+        }
+        _openPage = page;
+        _bar.ActivePage = page;
+        _fade.Start();
+    }
 
-        _slide.Stop();
-        if (_slideTarget == 0) return;   // finished opening
+    /// <summary>
+    /// Fades the backdrop, bar and settings window toward their targets and stops itself
+    /// once everything has settled, hiding whichever top-level windows reached zero so a
+    /// closed menu costs nothing. Each is its own window (see BarForm), so this drives plain
+    /// Form.Opacity rather than repainting anything.
+    /// </summary>
+    private void FadeTick(object? sender, EventArgs e)
+    {
+        bool moving = false;
+        _chromeOpacity = Ease(_chromeOpacity, _chromeTarget, ref moving);
+        _panelOpacity = Ease(_panelOpacity, _panelTarget, ref moving);
 
-        _panel.Visible = false;
-        ActiveControl = null;            // a hidden panel must not keep swallowing hotkeys
+        _scrim.Opacity = _chromeOpacity * ScrimForm.MaxOpacity;
+        _bar.Opacity = Math.Max(_chromeOpacity, 0.001);
+        _panel.Opacity = Math.Max(_panelOpacity, 0.001);
+
+        if (moving) return;
+        _fade.Stop();
+        bool closingChrome = _chromeOpacity <= 0;
+        bool closingPanel = _panelOpacity <= 0;
+        // Whichever of these is about to close likely still holds Windows' input focus (it
+        // was the one that received the Escape keystroke, e.g. after clicking into an open
+        // settings panel). Reclaiming focus *before* hiding it - rather than after - means it
+        // has already let go of focus by the time Hide() runs, so Windows never has to guess
+        // which top-level window to hand focus to next. Left in the other order, that guess
+        // can land on a completely different app, which is what shows up as an alt-tab-like
+        // flash even though we fix it a moment later.
+        if (closingChrome || closingPanel) Activate();
+        if (closingChrome) { _scrim.Hide(); _bar.Hide(); }
+        if (closingPanel) _panel.Hide();
+    }
+
+    private static double Ease(double current, double target, ref bool moving)
+    {
+        double next = current + (target - current) * 0.32;
+        if (Math.Abs(target - next) < 0.01) next = target;
+        else moving = true;
+        return next;
     }
 
     // ---- devices --------------------------------------------------------------------------
@@ -804,7 +956,7 @@ public sealed class MainForm : Form
                     ? "Waiting for the preview to start"
                     : $"Off - {ShortcutLabel(ShortcutAction.ReplayToggle)} arms it");
 
-        _panel.SetRailStatus(_engine.IsStreaming,
+        _panel.SetLiveStatus(_engine.IsStreaming,
             _engine.IsStreaming ? $"{stats.PresentFps:0} FPS" : "Stopped",
             stats.Width > 0 ? $"{stats.Width}x{stats.Height}" : "no signal");
         _panel.SetRecordState(_engine.IsRecording
@@ -867,7 +1019,7 @@ public sealed class MainForm : Form
 
     private void CursorTick(object? sender, EventArgs e)
     {
-        if (_cursorHidden || _panel.Visible) return;
+        if (_cursorHidden || _menuOpen) return;
         if ((DateTime.UtcNow - _lastMouseMove).TotalSeconds < 2.5) return;
         if (!_video.ClientRectangle.Contains(_video.PointToClient(Cursor.Position))) return;
         Cursor.Hide();
@@ -882,32 +1034,33 @@ public sealed class MainForm : Form
     /// </summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        // A field that is waiting for its new chord must have the keystroke, not the shell.
-        if (KeyCaptureButton.AnyCapturing) return base.ProcessCmdKey(ref msg, keyData);
-
-        if (_shortcuts.Lookup(keyData) is { } action && RunShortcut(action)) return true;
+        if (DispatchShortcut(keyData)) return true;
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
     /// <summary>Runs an action, or returns false to let the keystroke go where it was going.</summary>
     private bool RunShortcut(ShortcutAction action)
     {
-        // A letter or an arrow key belongs to whatever is being typed in or nudged.
+        // A letter or an arrow key belongs to whatever is being typed in or nudged. The
+        // settings window is now its own top-level Form, so its focus has to be checked
+        // separately from MainForm's own ActiveControl - they no longer share one focus scope.
         switch (action)
         {
             case ShortcutAction.Mute:
             case ShortcutAction.MicMute:
-                if (ActiveControl is TextBoxBase or ComboBox) return false;
+                if (ActiveControl is TextBoxBase or FlatCombo) return false;
+                if (_panel.ActiveControl is TextBoxBase or FlatCombo) return false;
                 break;
             case ShortcutAction.VolumeUp:
             case ShortcutAction.VolumeDown:
-                if (ActiveControl is Slider or NumericField or ComboBox or TextBoxBase) return false;
+                if (ActiveControl is Slider or NumericField or FlatCombo or TextBoxBase) return false;
+                if (_panel.ActiveControl is Slider or NumericField or FlatCombo or TextBoxBase) return false;
                 break;
         }
 
         switch (action)
         {
-            case ShortcutAction.TogglePanel: SetPanelOpen(!_panel.Visible); return true;
+            case ShortcutAction.TogglePanel: SetMenuOpen(!_menuOpen); return true;
             case ShortcutAction.Fullscreen: ToggleFullscreen(); return true;
             case ShortcutAction.Snapshot: _ = TakeSnapshot(); return true;
             case ShortcutAction.RecordToggle: _ = ToggleRecording(); return true;

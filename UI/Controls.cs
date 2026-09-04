@@ -141,73 +141,271 @@ internal sealed class Slider : Control
 }
 
 /// <summary>
-/// A ComboBox that actually matches the rest of the window. WinForms leaves the drop-down
-/// button to the system even in flat mode, which is the pale square that looks out of place
-/// on a dark panel, so it is painted over after the control draws itself.
+/// A dropdown field that actually matches the rest of the window. Two attempts at patching
+/// WinForms' own <see cref="ComboBox"/> (painting over the drop-down button, then repainting
+/// the whole box after the base class) both failed the same way: a flat-styled ComboBox does
+/// its own border/background painting on mouse-over as native, non-owner-drawable behaviour,
+/// and on top of that some of it turned out to be drawn outside of WM_PAINT entirely (directly
+/// in response to mouse messages), so nothing hooked into painting could ever reliably sit on
+/// top of it. Rather than keep chasing that, this drops the Win32 combo box completely and is
+/// a plain <see cref="Control"/> that draws itself - background, text, chevron, border - with
+/// no native chrome underneath to fight, the same approach already used for <see cref="Slider"/>
+/// and <see cref="NumericField"/>. The list itself opens as a borderless owner-drawn popup
+/// (<see cref="FlatComboList"/>) rather than a native drop-down, for the same reason.
 /// </summary>
-internal sealed class FlatCombo : ComboBox
+internal sealed class FlatCombo : Control
 {
-    private const int WM_PAINT = 0x000F;
-    private bool _hovered;
+    /// <summary>Minimal Items collection covering exactly what this app's call sites use
+    /// (Add/AddRange/Clear/IndexOf/Count/indexing/LINQ) - clearing also resets the selection,
+    /// matching ComboBox.Items.Clear()'s behaviour.</summary>
+    public sealed class ItemCollection : IEnumerable<object>
+    {
+        private readonly List<object> _list = new();
+        private readonly FlatCombo _owner;
+        internal ItemCollection(FlatCombo owner) => _owner = owner;
+
+        public int Count => _list.Count;
+        public object this[int index] => _list[index];
+
+        public void Add(object item) { _list.Add(item); _owner.Invalidate(); }
+        public void AddRange(IEnumerable<object> items) { _list.AddRange(items); _owner.Invalidate(); }
+        public void Clear() { _list.Clear(); _owner.SelectedIndex = -1; _owner.Invalidate(); }
+        public int IndexOf(object item) => _list.IndexOf(item);
+
+        public IEnumerator<object> GetEnumerator() => _list.GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private int _selectedIndex = -1;
+    private FlatComboList? _openList;
+
+    public ItemCollection Items { get; }
+    public event EventHandler? SelectedIndexChanged;
+
+    public int SelectedIndex
+    {
+        get => _selectedIndex;
+        set
+        {
+            value = value >= 0 && value < Items.Count ? value : -1;
+            if (value == _selectedIndex) return;
+            _selectedIndex = value;
+            Invalidate();
+            SelectedIndexChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public object? SelectedItem
+    {
+        get => _selectedIndex >= 0 ? Items[_selectedIndex] : null;
+        set
+        {
+            for (int i = 0; i < Items.Count; i++)
+            {
+                if (!Equals(Items[i], value)) continue;
+                SelectedIndex = i;
+                return;
+            }
+            SelectedIndex = -1;
+        }
+    }
 
     public FlatCombo()
     {
-        FlatStyle = FlatStyle.Flat;
-        DropDownStyle = ComboBoxStyle.DropDownList;
-        DrawMode = DrawMode.OwnerDrawFixed;
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint
+            | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        Items = new ItemCollection(this);
         BackColor = Theme.Field;
-        ForeColor = Theme.Text;
-        ItemHeight = 19;
+        Cursor = Cursors.Default;
+        TabStop = true;
+        Height = 24;
     }
 
-    protected override void OnDrawItem(DrawItemEventArgs e)
+    protected override void OnPaint(PaintEventArgs e)
     {
-        if (e.Index < 0) return;
-        bool selected = (e.State & DrawItemState.Selected) != 0;
-        bool inList = (e.State & DrawItemState.ComboBoxEdit) == 0;
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var back = new SolidBrush(Theme.Field))
+            g.FillRectangle(back, 0, 0, Width, Height);
 
-        using (var back = new SolidBrush(selected && inList ? Theme.Accent : Theme.Field))
-            e.Graphics.FillRectangle(back, e.Bounds);
-
-        using var text = new SolidBrush(selected && inList ? Color.White : Theme.Text);
-        using var format = new StringFormat
+        using (var text = new SolidBrush(Enabled ? Theme.Text : Theme.TextDim))
+        using (var format = new StringFormat
         {
             LineAlignment = StringAlignment.Center,
             Trimming = StringTrimming.EllipsisCharacter,
             FormatFlags = StringFormatFlags.NoWrap,
-        };
-        var bounds = new RectangleF(e.Bounds.X + 5, e.Bounds.Y, e.Bounds.Width - (inList ? 10 : 26), e.Bounds.Height);
-        e.Graphics.DrawString(Items[e.Index]?.ToString() ?? "", e.Font ?? Font, text, bounds, format);
-    }
-
-    protected override void OnMouseEnter(EventArgs e) { _hovered = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { _hovered = false; Invalidate(); base.OnMouseLeave(e); }
-    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
-    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
-    protected override void OnSelectedIndexChanged(EventArgs e) { Invalidate(); base.OnSelectedIndexChanged(e); }
-
-    protected override void WndProc(ref Message m)
-    {
-        base.WndProc(ref m);
-        if (m.Msg != WM_PAINT) return;
-
-        using var g = Graphics.FromHwnd(Handle);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-
-        // Cover the system drop-down button, then draw our own chevron.
-        var button = new Rectangle(Width - 20, 1, 19, Height - 2);
-        using (var back = new SolidBrush(Theme.Field))
-            g.FillRectangle(back, button);
-
-        using (var pen = new Pen(Enabled ? Theme.TextDim : Theme.FieldBorder, 1.6f))
+        })
         {
-            int cx = button.X + button.Width / 2;
-            int cy = Height / 2 - 1;
-            g.DrawLines(pen, new[] { new Point(cx - 4, cy - 1), new Point(cx, cy + 3), new Point(cx + 4, cy - 1) });
+            var textBounds = new RectangleF(5, 0, Width - Height - 5, Height);
+            g.DrawString(SelectedItem?.ToString() ?? "", Font, text, textBounds, format);
         }
 
-        using (var border = new Pen(_hovered && Enabled ? Theme.FieldBorder : Theme.FieldBorder))
-            g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+        // Sizing the button off Height (already the control's real, DPI-scaled size at paint
+        // time) keeps this a plain right-aligned arrow on the field's own colour instead of a
+        // separate boxed-in button at any scale.
+        int cx = Width - Height / 2;
+        int cy = Height / 2 - 1;
+        using (var pen = new Pen(Enabled ? Theme.TextDim : Theme.FieldBorder, 1.6f))
+            g.DrawLines(pen, new[] { new Point(cx - 4, cy - 1), new Point(cx, cy + 3), new Point(cx + 4, cy - 1) });
+
+        using var border = new Pen(Theme.FieldBorder);
+        g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+    }
+
+    // No hover-based redraw at all: the whole point of this control is that passing the mouse
+    // over it does nothing visually until it is actually clicked.
+
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Left && Enabled) Toggle();
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (!Enabled) return;
+        if (_openList is not null) return;
+        switch (e.KeyCode)
+        {
+            case Keys.Enter or Keys.Space or Keys.F4:
+                Toggle();
+                e.Handled = true;
+                break;
+            case Keys.Up when Items.Count > 0:
+                SelectedIndex = _selectedIndex <= 0 ? Items.Count - 1 : _selectedIndex - 1;
+                e.Handled = true;
+                break;
+            case Keys.Down when Items.Count > 0:
+                SelectedIndex = _selectedIndex < 0 || _selectedIndex >= Items.Count - 1 ? 0 : _selectedIndex + 1;
+                e.Handled = true;
+                break;
+        }
+    }
+
+    protected override bool IsInputKey(Keys keyData) =>
+        keyData is Keys.Up or Keys.Down or Keys.Enter or Keys.Space || base.IsInputKey(keyData);
+
+    private void Toggle()
+    {
+        if (_openList is not null) { _openList.Close(); return; }
+        if (Items.Count == 0) return;
+
+        Focus();
+        var owner = FindForm();
+        _openList = new FlatComboList(Items, _selectedIndex, Width, Font!) { Owner = owner, TopMost = owner?.TopMost ?? false };
+        _openList.ItemPicked += index => SelectedIndex = index;
+        _openList.FormClosed += (_, _) => { _openList = null; Invalidate(); };
+        _openList.ShowAt(PointToScreen(new Point(0, Height)));
+        Invalidate();
+    }
+}
+
+/// <summary>Borderless owner-drawn popup used by <see cref="FlatCombo"/> for its open list, so
+/// the list rows can be styled the same way as the rest of the app without going through
+/// WinForms' native ListBox/ComboBox drawing.</summary>
+internal sealed class FlatComboList : Form
+{
+    private const int RowHeight = 24;
+    private const int MaxVisibleRows = 10;
+
+    private readonly FlatCombo.ItemCollection _items;
+    private readonly int _visibleRows;
+    private int _hoverIndex = -1;
+    private int _scrollOffset;
+
+    public event Action<int>? ItemPicked;
+
+    public FlatComboList(FlatCombo.ItemCollection items, int selectedIndex, int width, Font font)
+    {
+        _items = items;
+        _hoverIndex = selectedIndex;
+        _visibleRows = Math.Min(_items.Count, MaxVisibleRows);
+        _scrollOffset = Math.Clamp(selectedIndex - _visibleRows / 2, 0, Math.Max(0, _items.Count - _visibleRows));
+
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.Manual;
+        ShowInTaskbar = false;
+        BackColor = Theme.Field;
+        Font = font;
+        Width = width;
+        Height = _visibleRows * RowHeight + 2;
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
+    }
+
+    public void ShowAt(Point screenTopLeft)
+    {
+        var area = Screen.FromPoint(screenTopLeft).WorkingArea;
+        int x = Math.Clamp(screenTopLeft.X, area.Left, area.Right - Width);
+        int y = screenTopLeft.Y + Height > area.Bottom ? screenTopLeft.Y - Height - 24 : screenTopLeft.Y;
+        Location = new Point(x, y);
+        Show();
+        Activate();
+    }
+
+    protected override void OnDeactivate(EventArgs e) { base.OnDeactivate(e); Close(); }
+
+    private int RowAt(int y) => _scrollOffset + y / RowHeight;
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        int index = RowAt(e.Y);
+        index = index >= 0 && index < _items.Count ? index : -1;
+        if (index == _hoverIndex) return;
+        _hoverIndex = index;
+        Invalidate();
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button != MouseButtons.Left) return;
+        int index = RowAt(e.Y);
+        if (index < 0 || index >= _items.Count) return;
+        ItemPicked?.Invoke(index);
+        Close();
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        int maxOffset = Math.Max(0, _items.Count - _visibleRows);
+        if (maxOffset == 0) return;
+        int rows = -Math.Sign(e.Delta) * Math.Max(1, Math.Abs(e.Delta) / 120);
+        int newOffset = Math.Clamp(_scrollOffset + rows, 0, maxOffset);
+        if (newOffset == _scrollOffset) return;
+        _scrollOffset = newOffset;
+        Invalidate();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        using (var format = new StringFormat
+        {
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap,
+        })
+        {
+            for (int row = 0; row < _visibleRows; row++)
+            {
+                int i = _scrollOffset + row;
+                bool hot = i == _hoverIndex;
+                var bounds2 = new Rectangle(0, row * RowHeight, Width, RowHeight);
+                using (var back = new SolidBrush(hot ? Theme.Accent : Theme.Field))
+                    g.FillRectangle(back, bounds2);
+                using var text = new SolidBrush(hot ? Color.White : Theme.Text);
+                var textBounds = new RectangleF(bounds2.X + 5, bounds2.Y, bounds2.Width - 10, bounds2.Height);
+                g.DrawString(_items[i]?.ToString() ?? "", Font, text, textBounds, format);
+            }
+        }
+        using var border = new Pen(Theme.FieldBorder);
+        g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
     }
 }
 

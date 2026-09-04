@@ -8,24 +8,27 @@ using RipsawStudio.Render;
 namespace RipsawStudio.UI;
 
 /// <summary>
-/// The floating settings panel: a nav rail on the left, and pages built from cards laid
-/// out in two columns. It sits over the picture rather than beside it, so the preview keeps
-/// the whole window when the panel is closed.
+/// The floating settings window: pages built from cards laid out in two columns, with a
+/// slim scrollbar when a page runs taller than the window. It is its own top-level window
+/// (borderless, owned by MainForm) rather than a child control, so it can fade with plain
+/// <see cref="Form.Opacity"/> - see the note on <see cref="BarForm"/>. Which page shows is
+/// still driven from outside via <see cref="ShowPage"/>, now called from the separate
+/// <see cref="BarForm"/> instead of an internal rail.
 /// </summary>
-internal sealed class SettingsPanel : Panel
+internal sealed class SettingsPanel : Form
 {
-    private const int RailWidth = 116;
-    private const int Gap = 14;
     private const int PagePad = 22;
     private const int ColumnGap = 16;
+    private const int ScrollbarGutter = 14;
 
     private readonly AppSettings _settings;
-    private readonly NavRail _rail = new();
     private readonly Panel _pageHost = new();
     private readonly Label _pageTitle = new();
+    private readonly ScrollThumb _scrollThumb = new();
     private readonly Dictionary<Page, ContentPanel> _pages = new();
     private Page _page = Page.Capture;
     private bool _binding = true;
+
 
     private readonly FlatCombo _device = new();
     private readonly FlatCombo _format = new();
@@ -86,6 +89,8 @@ internal sealed class SettingsPanel : Panel
     private readonly Label _recordState = new();
     private readonly Label _replayState = new();
     private readonly RecentList _recent = new();
+    /// <summary>Compact live/FPS/resolution readout, formerly the bottom chip on the nav rail.</summary>
+    private readonly Label _liveStatus = new();
 
     /// <summary>One field per action and slot, created once and reused across rebuilds.</summary>
     private readonly Dictionary<(ShortcutAction, ShortcutSlot), KeyCaptureButton> _keyFields = new();
@@ -130,20 +135,27 @@ internal sealed class SettingsPanel : Panel
     public AudioDeviceInfo? SelectedMic =>
         _micDevice.SelectedItem is AudioDeviceInfo info && info.Id.Length > 0 ? info : null;
 
+    /// <summary>Raised whenever a page is shown, whichever way it was triggered (icon click,
+    /// or an in-page link such as the shortcuts editor's "Edit" jump) - lets MainForm keep the
+    /// bar's enlarged icon and its own notion of "which window is open" in step.</summary>
+    public event EventHandler<Page>? PageShown;
+
     public SettingsPanel(AppSettings settings, ShortcutMap shortcuts)
     {
         _settings = settings;
         _shortcuts = shortcuts;
-        BackColor = Theme.Background;
+
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        KeyPreview = true;
+        BackColor = Theme.Shell;
         TabStop = false;
         DoubleBuffered = true;
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
 
-        _rail.PageSelected += (_, page) => ShowPage(page);
-        Controls.Add(_rail);
-
         _pageTitle.Font = Theme.PageTitle;
-        _pageTitle.ForeColor = Theme.TextDim;
+        _pageTitle.ForeColor = Theme.Accent;
         _pageTitle.AutoSize = false;
         _pageTitle.BackColor = Theme.Shell;
         Controls.Add(_pageTitle);
@@ -151,6 +163,10 @@ internal sealed class SettingsPanel : Panel
         _pageHost.BackColor = Theme.Shell;
         _pageHost.TabStop = false;
         Controls.Add(_pageHost);
+
+        _scrollThumb.DragToRatio += ScrollToRatio;
+        Controls.Add(_scrollThumb);
+        _scrollThumb.BringToFront();
 
         ConfigureControls();
         WireHandlers();
@@ -168,7 +184,7 @@ internal sealed class SettingsPanel : Panel
         _vsync, _passthrough, _exclusive, _hardware, _onTop, _autoStart, _showStats,
         _micEnabled, _micMuted, _micMonitor, _replayEnabled,
         _startStop, _rescan, _record, _snapshot, _openFolder, _saveReplay,
-        _meter, _micMeter, _statusLine, _recordState, _replayState, _recent,
+        _meter, _micMeter, _statusLine, _recordState, _replayState, _recent, _liveStatus,
     }.Concat(_keyFields.Values);
 
     /// <summary>One-time setup. Kept out of Build so a relayout cannot duplicate any of it.</summary>
@@ -216,19 +232,19 @@ internal sealed class SettingsPanel : Panel
         _replayEnabled.Text = "Keep the recent past ready to save";
 
         _startStop.ButtonRole = FlatButton.Role.Accent;
-        _startStop.Glyph = Icon.Play;
+        _startStop.Glyph = RipsawStudio.UI.Icon.Play;
         _startStop.Text = "Start";
-        _rescan.Glyph = Icon.Refresh;
+        _rescan.Glyph = RipsawStudio.UI.Icon.Refresh;
         _rescan.Text = "Rescan";
         _record.ButtonRole = FlatButton.Role.Danger;
-        _record.Glyph = Icon.Record;
+        _record.Glyph = RipsawStudio.UI.Icon.Record;
         _record.Text = "Record";
-        _snapshot.Glyph = Icon.Camera;
+        _snapshot.Glyph = RipsawStudio.UI.Icon.Camera;
         _snapshot.Text = "Snapshot";
-        _openFolder.Glyph = Icon.Folder;
+        _openFolder.Glyph = RipsawStudio.UI.Icon.Folder;
         _openFolder.Text = "Open";
         _saveReplay.ButtonRole = FlatButton.Role.Accent;
-        _saveReplay.Glyph = Icon.Rewind;
+        _saveReplay.Glyph = RipsawStudio.UI.Icon.Rewind;
         _saveReplay.Text = "Save replay";
 
         foreach (var definition in ShortcutCatalog.All)
@@ -384,7 +400,7 @@ internal sealed class SettingsPanel : Panel
         ShowPage(_page);
     }
 
-    private int PageWidth => Math.Max(560, Width - RailWidth - Gap);
+    private int PageWidth => Math.Max(560, Width - ScrollbarGutter);
 
     // ---- pages ----------------------------------------------------------------------------
 
@@ -404,11 +420,11 @@ internal sealed class SettingsPanel : Panel
         var right = new List<Card>();
 
         // --- PROFILE
-        var profiles = new Card("Profile", Icon.Profile, columnWidth);
+        var profiles = new Card("Profile", RipsawStudio.UI.Icon.Profile, columnWidth);
         profiles.AddRow("Profile", _profile);
         profiles.AddHint("A profile remembers its own card, format, picture, audio devices\nand recording quality. Switching one in applies it straight away.");
         profiles.AddSpace(4);
-        var newProfile = new FlatButton { Text = "New", Glyph = Icon.Profile };
+        var newProfile = new FlatButton { Text = "New", Glyph = RipsawStudio.UI.Icon.Profile };
         var renameProfile = new FlatButton { Text = "Rename" };
         var deleteProfile = new FlatButton { Text = "Delete" };
         newProfile.Click += (_, _) => NewProfile();
@@ -418,30 +434,32 @@ internal sealed class SettingsPanel : Panel
         left.Add(profiles.Finish());
 
         // --- SOURCE
-        var source = new Card("Source", Icon.Monitor, columnWidth);
+        var source = new Card("Source", RipsawStudio.UI.Icon.Monitor, columnWidth);
         source.AddRow("Card", _device);
         source.AddRow("Format", _format);
         source.AddHint("NV12 and YUY2 arrive ready to display. MJPG must be decoded first,\nwhich costs a few ms - prefer uncompressed if the card offers it.");
         source.AddSpace(4);
         source.AddButtonsFilled(_startStop, _rescan);
+        source.AddSpace(2);
+        source.AddMono(_liveStatus, 1);
         left.Add(source.Finish());
 
         // --- PICTURE
-        var picture = new Card("Picture", Icon.Image, columnWidth);
+        var picture = new Card("Picture", RipsawStudio.UI.Icon.Image, columnWidth);
         picture.AddHeaderAction("Reset", ResetPicture);
         picture.AddRow("Aspect", _aspect);
         picture.AddRow("Scaling", _scaling);
         picture.AddRow("Range", _range);
         picture.AddRow("Matrix", _matrix);
-        picture.AddSlider("Brightness", Icon.Sun, _brightness, _brightnessValue);
-        picture.AddSlider("Contrast", Icon.Contrast, _contrast, _contrastValue);
-        picture.AddSlider("Saturation", Icon.Droplet, _saturation, _saturationValue);
-        picture.AddSlider("Smoothing Pass", Icon.Sliders, _artifactSmoothing, _artifactSmoothingValue);
+        picture.AddSlider("Brightness", RipsawStudio.UI.Icon.Sun, _brightness, _brightnessValue);
+        picture.AddSlider("Contrast", RipsawStudio.UI.Icon.Contrast, _contrast, _contrastValue);
+        picture.AddSlider("Saturation", RipsawStudio.UI.Icon.Droplet, _saturation, _saturationValue);
+        picture.AddSlider("Smoothing Pass", RipsawStudio.UI.Icon.Sliders, _artifactSmoothing, _artifactSmoothingValue);
         picture.AddHint("Not needed on a decent card, but if you're using a low-end capture card\nthat produces blocky/smeared pixels, try this between 0.25 and 0.50 at most.\nPush it any further and you will ruin fine detail in every game you play.");
         left.Add(picture.Finish());
 
         // --- GRAPHICS
-        var graphics = new Card("Graphics", Icon.Chip, columnWidth);
+        var graphics = new Card("Graphics", RipsawStudio.UI.Icon.Chip, columnWidth);
         graphics.AddRow("GPU", _adapter);
         graphics.AddHint("Changing this restarts the preview.");
         graphics.AddSpace(6);
@@ -450,12 +468,12 @@ internal sealed class SettingsPanel : Panel
         right.Add(graphics.Finish());
 
         // --- AUDIO
-        var audio = new Card("Audio", Icon.Speaker, columnWidth);
+        var audio = new Card("Audio", RipsawStudio.UI.Icon.Speaker, columnWidth);
         audio.AddHeaderAction("Reset", ResetAudio);
         audio.AddRow("Input", _audioIn);
         audio.AddRow("Output", _audioOut);
         audio.AddCheck(_passthrough);
-        audio.AddSlider("Volume", Icon.Speaker, _volume, _volumeValue);
+        audio.AddSlider("Volume", RipsawStudio.UI.Icon.Speaker, _volume, _volumeValue);
         audio.AddRow("Buffer", _audioBuffer, 88, "ms");
         audio.AddRow("Restart", _audioRestart, 88, "min  (0 = off)");
         audio.AddCheck(_exclusive);
@@ -471,11 +489,11 @@ internal sealed class SettingsPanel : Panel
         var left = new List<Card>();
         var right = new List<Card>();
 
-        var recording = new Card("Recording", Icon.Record, columnWidth);
+        var recording = new Card("Recording", RipsawStudio.UI.Icon.Record, columnWidth);
         recording.AddHeaderAction("Reset", ResetRecording);
 
         recording.AddRow("Folder", _folder, recording.FieldWidth - 40, "");
-        var browse = new FlatButton { Text = "", Glyph = Icon.Folder };
+        var browse = new FlatButton { Text = "", Glyph = RipsawStudio.UI.Icon.Folder };
         browse.SetBounds(recording.FieldLeft + recording.FieldWidth - 34, _folder.Top - 1, 34, 26);
         browse.Click += (_, _) =>
         {
@@ -497,11 +515,11 @@ internal sealed class SettingsPanel : Panel
         recording.AddButtonsFilled(_record, _snapshot, _openFolder);
         left.Add(recording.Finish());
 
-        var microphone = new Card("Microphone", Icon.Mic, columnWidth);
+        var microphone = new Card("Microphone", RipsawStudio.UI.Icon.Mic, columnWidth);
         microphone.AddHeaderAction("Reset", ResetMic);
         microphone.AddCheck(_micEnabled);
         microphone.AddRow("Mic", _micDevice);
-        microphone.AddSlider("Level", Icon.Mic, _micVolume, _micVolumeValue);
+        microphone.AddSlider("Level", RipsawStudio.UI.Icon.Mic, _micVolume, _micVolumeValue);
         microphone.AddMeter("Signal", _micMeter);
         microphone.AddSpace(4);
         microphone.AddCheck(_micMuted);
@@ -510,7 +528,7 @@ internal sealed class SettingsPanel : Panel
         microphone.AddHint("Your voice is mixed in ahead of the encoder, so it lands in recordings\nand in saved replays. It is kept out of the monitor by default - hearing\nyourself through any delay is unpleasant.");
         left.Add(microphone.Finish());
 
-        var replay = new Card("Instant replay", Icon.Rewind, columnWidth);
+        var replay = new Card("Instant replay", RipsawStudio.UI.Icon.Rewind, columnWidth);
         replay.AddCheck(_replayEnabled);
         replay.AddRow("Keep", _replayBuffer, 88, "seconds");
         replay.AddRow("Save", _replaySave, 88, "seconds of it");
@@ -520,11 +538,11 @@ internal sealed class SettingsPanel : Panel
         replay.AddButtonsFilled(_saveReplay);
         right.Add(replay.Finish());
 
-        var status = new Card("Status", Icon.Info, columnWidth);
+        var status = new Card("Status", RipsawStudio.UI.Icon.Info, columnWidth);
         status.AddMono(_recordState, 2);
         right.Add(status.Finish());
 
-        var recent = new Card("Recent files", Icon.Folder, columnWidth);
+        var recent = new Card("Recent files", RipsawStudio.UI.Icon.Folder, columnWidth);
         recent.AddHeaderAction("Refresh", () => _recent.Reload(_settings.OutputFolder));
         _recent.SetBounds(Card.Pad, 46, columnWidth - Card.Pad * 2, 232);
         recent.Controls.Add(_recent);
@@ -541,7 +559,7 @@ internal sealed class SettingsPanel : Panel
     private void BuildShortcuts()
     {
         var page = NewPage(Page.Shortcuts);
-        var card = new Card("Shortcuts", Icon.Keyboard, PageWidth - PagePad * 2);
+        var card = new Card("Shortcuts", RipsawStudio.UI.Icon.Keyboard, PageWidth - PagePad * 2);
         card.AddHeaderAction("Reset", () =>
         {
             _shortcuts.ResetToDefaults();
@@ -585,22 +603,22 @@ internal sealed class SettingsPanel : Panel
         var left = new List<Card>();
         var right = new List<Card>();
 
-        var general = new Card("General", Icon.Sliders, columnWidth);
+        var general = new Card("General", RipsawStudio.UI.Icon.Sliders, columnWidth);
         general.AddCheck(_onTop);
         general.AddCheck(_autoStart);
         general.AddCheck(_showStats);
         left.Add(general.Finish());
 
-        var maintenance = new Card("Diagnostics", Icon.Stopwatch, columnWidth);
+        var maintenance = new Card("Diagnostics", RipsawStudio.UI.Icon.Stopwatch, columnWidth);
         maintenance.AddHint("A trace records every frame for ten seconds and reports the\ndistribution, which shows up stutters that an average hides.");
         maintenance.AddSpace(6);
-        var diagnostics = new FlatButton { Text = "Save diagnostics", Glyph = Icon.Download };
-        var trace = new FlatButton { Text = "Trace 10 s", Glyph = Icon.Stopwatch };
+        var diagnostics = new FlatButton { Text = "Save diagnostics", Glyph = RipsawStudio.UI.Icon.Download };
+        var trace = new FlatButton { Text = "Trace 10 s", Glyph = RipsawStudio.UI.Icon.Stopwatch };
         diagnostics.Click += (_, _) => DiagnosticsClicked?.Invoke(this, EventArgs.Empty);
         trace.Click += (_, _) => TraceClicked?.Invoke(this, EventArgs.Empty);
         maintenance.AddButtonsFilled(diagnostics, trace);
 
-        var resetAll = new FlatButton { Text = "Reset everything", Glyph = Icon.Refresh };
+        var resetAll = new FlatButton { Text = "Reset everything", Glyph = RipsawStudio.UI.Icon.Refresh };
         resetAll.Click += (_, _) =>
         {
             if (MessageBox.Show(this,
@@ -615,7 +633,7 @@ internal sealed class SettingsPanel : Panel
         maintenance.AddButtonsFilled(resetAll);
         right.Add(maintenance.Finish());
 
-        var live = new Card("Live pipeline", Icon.Monitor, columnWidth);
+        var live = new Card("Live pipeline", RipsawStudio.UI.Icon.Monitor, columnWidth);
         live.AddMono(_statusLine, 3);
         left.Add(live.Finish());
 
@@ -642,7 +660,7 @@ internal sealed class SettingsPanel : Panel
         var left = new List<Card>();
         var right = new List<Card>();
 
-        var about = new Card("Ripsaw Studio", Icon.Info, columnWidth);
+        var about = new Card("Ripsaw Studio", RipsawStudio.UI.Icon.Info, columnWidth);
         about.AddText("A low-latency capture viewer and recorder for Windows.");
         about.AddText($"Version {FormatVersion(typeof(SettingsPanel).Assembly.GetName().Version)}", dim: true);
         about.AddSpace(6);
@@ -654,7 +672,7 @@ internal sealed class SettingsPanel : Panel
         about.AddText(Path.GetDirectoryName(AppSettings.SettingsPath) ?? "", dim: true);
         left.Add(about.Finish());
 
-        var keys = new Card("Shortcuts", Icon.Keyboard, columnWidth);
+        var keys = new Card("Shortcuts", RipsawStudio.UI.Icon.Keyboard, columnWidth);
         keys.AddHeaderAction("Edit", () => ShowPage(Page.Shortcuts));
         _aboutKeys.Clear();
         foreach (var definition in ShortcutCatalog.All)
@@ -686,16 +704,19 @@ internal sealed class SettingsPanel : Panel
         page.Height = Math.Max(leftY, rightY) + 8;
     }
 
-    private void ShowPage(Page page)
+    /// <summary>Shows the given page's content. Called from MainForm when a bar icon is
+    /// clicked, and from within a page itself for an in-page jump (e.g. the shortcuts
+    /// editor's "Edit" link) - either way <see cref="PageShown"/> fires so MainForm's own
+    /// notion of "which window is open" stays correct.</summary>
+    public void ShowPage(Page page)
     {
         _page = page;
-        _rail.Selected = page;
         _pageTitle.Text = page switch
         {
             Page.Capture => "CAPTURE SETTINGS",
-            Page.Record => "RECORDING",
+            Page.Record => "RECORDING SETTINGS",
             Page.Shortcuts => "KEYBOARD SHORTCUTS",
-            Page.Settings => "SETTINGS",
+            Page.Settings => "GENERAL SETTINGS",
             _ => "ABOUT",
         };
         foreach (var (key, content) in _pages)
@@ -704,57 +725,83 @@ internal sealed class SettingsPanel : Panel
             if (key == page) content.Top = 0;
         }
         if (page == Page.Record) _recent.Reload(_settings.OutputFolder);
+        UpdateScrollbar();
+        PageShown?.Invoke(this, page);
     }
 
-    // ---- layout of the panel itself ----------------------------------------------------
+    // ---- layout of the window itself ----------------------------------------------------
 
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        _rail.SetBounds(0, 0, RailWidth, Height);
-        _pageHost.SetBounds(RailWidth + Gap, ContentTop, Math.Max(1, Width - RailWidth - Gap),
+        _pageHost.SetBounds(0, ContentTop, Math.Max(1, Width - ScrollbarGutter),
                             Math.Max(1, Height - ContentTop - 12));
-        _pageTitle.SetBounds(RailWidth + Gap + PagePad, 22, 400, 24);
+        _pageTitle.SetBounds(PagePad, 22, Math.Max(1, Width - PagePad * 2), 24);
+        _scrollThumb.SetBounds(Width - ScrollbarGutter + 4, ContentTop, 4, _pageHost.Height);
         foreach (var content in _pages.Values)
         {
             content.Width = _pageHost.Width;
             content.Top = Math.Clamp(content.Top, Math.Min(0, ContentViewHeight - content.Height), 0);
         }
         UpdateRegion();
+        UpdateScrollbar();
     }
 
     private int ContentTop => 58;
     private int ContentViewHeight => _pageHost.Height;
 
-    /// <summary>Rounded corners on both the rail and the page area, so the video shows through.</summary>
+    /// <summary>Rounded corners on the window, so the video shows through around it.</summary>
     private void UpdateRegion()
     {
-        if (Width <= 0 || Height <= 0) return;
-        using var path = new GraphicsPath();
-        using (var rail = FlatButton.Rounded(new Rectangle(0, 0, RailWidth, Height), 14))
-            path.AddPath(rail, false);
-        using (var page = FlatButton.Rounded(new Rectangle(RailWidth + Gap, 0, Width - RailWidth - Gap, Height), 14))
-            path.AddPath(page, false);
+        if (Width <= 0 || Height <= 0 || !IsHandleCreated) return;
+        using var path = FlatButton.Rounded(new Rectangle(0, 0, Width, Height), 16);
         Region?.Dispose();
         Region = new Region(path);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        UpdateRegion();
+        if (_filterInstalled) return;
+        Application.AddMessageFilter(_wheelFilter);
+        _filterInstalled = true;
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.Clear(Theme.Background);
         using var fill = new SolidBrush(Theme.Shell);
-        using var page = FlatButton.Rounded(new Rectangle(RailWidth + Gap, 0, Width - RailWidth - Gap - 1, Height - 1), 14);
+        using var page = FlatButton.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 16);
         g.FillPath(fill, page);
     }
 
-    protected override void OnHandleCreated(EventArgs e)
+    /// <summary>
+    /// This window is a separate top-level form, so keystrokes typed while it has focus
+    /// (including inside its text boxes and combo boxes) would otherwise never reach
+    /// MainForm's shortcut table.
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        base.OnHandleCreated(e);
-        if (_filterInstalled) return;
-        Application.AddMessageFilter(_wheelFilter);
-        _filterInstalled = true;
+        if (Owner is MainForm main && main.DispatchShortcut(keyData)) return true;
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private const int WM_MOUSEACTIVATE = 0x0021;
+    private const int MA_ACTIVATE = 1;
+    private const int MA_ACTIVATEANDEAT = 2;
+
+    /// <summary>Same reasoning as BarForm's override: the _panel.Activate() call in MainForm
+    /// can lose the race to reliably activate this window the very first time its handle is
+    /// created and shown in a run, in which case the click that opened it gets eaten as an
+    /// activation-only click instead of reaching whatever it landed on. Forcing MA_ACTIVATE
+    /// means that click is never discarded, regardless of whether Activate() already won.</summary>
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        if (m.Msg == WM_MOUSEACTIVATE && m.Result == (IntPtr)MA_ACTIVATEANDEAT)
+            m.Result = (IntPtr)MA_ACTIVATE;
     }
 
     protected override void Dispose(bool disposing)
@@ -778,6 +825,31 @@ internal sealed class SettingsPanel : Panel
         if (!_pages.TryGetValue(_page, out var content)) return;
         int lowest = Math.Min(0, ContentViewHeight - content.Height);
         content.Top = Math.Clamp(content.Top + delta, lowest, 0);
+        UpdateScrollbar();
+    }
+
+    /// <summary>Called while the user drags the scrollbar thumb; ratio is 0 at the top.</summary>
+    private void ScrollToRatio(float ratio)
+    {
+        if (!_pages.TryGetValue(_page, out var content)) return;
+        int lowest = Math.Min(0, ContentViewHeight - content.Height);
+        content.Top = (int)Math.Round(lowest * Math.Clamp(ratio, 0f, 1f));
+        UpdateScrollbar();
+    }
+
+    /// <summary>Keeps the slim scrollbar in step with the current page's scroll position,
+    /// hiding it entirely once a page is short enough to need no scrolling at all.</summary>
+    private void UpdateScrollbar()
+    {
+        if (!_pages.TryGetValue(_page, out var content) || ContentViewHeight <= 0)
+        {
+            _scrollThumb.SetMetrics(0f, 1f);
+            return;
+        }
+        float sizeRatio = content.Height <= ContentViewHeight ? 1f : (float)ContentViewHeight / content.Height;
+        int lowest = Math.Min(0, ContentViewHeight - content.Height);
+        float topRatio = lowest == 0 ? 0f : content.Top / (float)lowest;
+        _scrollThumb.SetMetrics(topRatio, sizeRatio);
     }
 
     /// <summary>Routes the wheel by cursor position rather than focus.</summary>
@@ -908,7 +980,7 @@ internal sealed class SettingsPanel : Panel
 
     /// <summary>
     /// Rebuilds the profile dropdown. Only for when the list itself changed - refilling a
-    /// ComboBox's items from inside its own SelectedIndexChanged is reentrant, so an ordinary
+    /// FlatCombo's items from inside its own SelectedIndexChanged is reentrant, so an ordinary
     /// switch uses <see cref="SelectActiveProfile"/> instead.
     /// </summary>
     private void LoadProfiles()
@@ -1086,7 +1158,7 @@ internal sealed class SettingsPanel : Panel
         _binding = false;
     }
 
-    private static void SelectById(ComboBox combo, string? id)
+    private static void SelectById(FlatCombo combo, string? id)
     {
         if (string.IsNullOrEmpty(id)) return;
         for (int i = 0; i < combo.Items.Count; i++)
@@ -1102,13 +1174,13 @@ internal sealed class SettingsPanel : Panel
     public void SetStreaming(bool streaming)
     {
         _startStop.Text = streaming ? "Stop" : "Start";
-        _startStop.Glyph = streaming ? Icon.Stop : Icon.Play;
+        _startStop.Glyph = streaming ? RipsawStudio.UI.Icon.Stop : RipsawStudio.UI.Icon.Play;
     }
 
     public void SetRecording(bool recording)
     {
         _record.Text = recording ? "Stop" : "Record";
-        _record.Glyph = recording ? Icon.Stop : Icon.Record;
+        _record.Glyph = recording ? RipsawStudio.UI.Icon.Stop : RipsawStudio.UI.Icon.Record;
         if (!recording) _recent.Reload(_settings.OutputFolder);
     }
 
@@ -1134,7 +1206,13 @@ internal sealed class SettingsPanel : Panel
     }
 
 
-    public void SetRailStatus(bool live, string top, string bottom) => _rail.SetStatus(live, top, bottom);
+    /// <summary>Compact live/FPS/resolution readout on the Capture page's Source card -
+    /// formerly a chip pinned to the bottom of the nav rail.</summary>
+    public void SetLiveStatus(bool live, string top, string bottom)
+    {
+        _liveStatus.Text = (live ? "\u25CF  " : "\u25CB  ") + top + "   " + bottom;
+        _liveStatus.ForeColor = live ? Theme.Good : Theme.TextFaint;
+    }
 }
 
 /// <summary>A page surface, taller than its viewport, slid by the wheel.</summary>

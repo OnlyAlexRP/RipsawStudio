@@ -2,28 +2,33 @@ namespace RipsawStudio.UI;
 
 internal static class Theme
 {
+    // Palette lifted straight from the supplied artwork (bar, icons and window mockups all
+    // sample to the same near-black with one orange accent), so every surface in the app
+    // reads as one consistent skin rather than a rail-and-shell theme reskinned in place.
+
     /// <summary>Letterbox area around the picture.</summary>
-    public static readonly Color Background = Color.FromArgb(16, 17, 20);
+    public static readonly Color Background = Color.FromArgb(10, 10, 12);
 
-    /// <summary>The floating panel and the nav rail.</summary>
-    public static readonly Color Shell = Color.FromArgb(38, 42, 49);
+    /// <summary>The floating settings window and the menu bar.</summary>
+    public static readonly Color Shell = Color.FromArgb(11, 13, 15);
     /// <summary>Cards sitting on the shell.</summary>
-    public static readonly Color Card = Color.FromArgb(47, 52, 60);
-    public static readonly Color CardBorder = Color.FromArgb(59, 66, 75);
+    public static readonly Color Card = Color.FromArgb(22, 24, 27);
+    public static readonly Color CardBorder = Color.FromArgb(38, 40, 45);
     /// <summary>Inputs sitting on a card.</summary>
-    public static readonly Color Field = Color.FromArgb(54, 60, 68);
-    public static readonly Color FieldBorder = Color.FromArgb(70, 78, 88);
-    public static readonly Color Hover = Color.FromArgb(66, 73, 83);
-    public static readonly Color Track = Color.FromArgb(72, 79, 90);
+    public static readonly Color Field = Color.FromArgb(31, 33, 37);
+    public static readonly Color FieldBorder = Color.FromArgb(48, 50, 55);
+    public static readonly Color Hover = Color.FromArgb(43, 45, 50);
+    public static readonly Color Track = Color.FromArgb(49, 51, 57);
 
-    public static readonly Color Text = Color.FromArgb(232, 234, 238);
-    public static readonly Color TextDim = Color.FromArgb(154, 161, 171);
-    public static readonly Color TextFaint = Color.FromArgb(122, 130, 141);
+    public static readonly Color Text = Color.FromArgb(235, 237, 240);
+    public static readonly Color TextDim = Color.FromArgb(158, 161, 168);
+    public static readonly Color TextFaint = Color.FromArgb(108, 112, 120);
 
-    public static readonly Color Accent = Color.FromArgb(228, 121, 110);
-    public static readonly Color AccentHover = Color.FromArgb(238, 138, 127);
+    /// <summary>The orange from the icon artwork - the app's one accent colour.</summary>
+    public static readonly Color Accent = Color.FromArgb(235, 71, 42);
+    public static readonly Color AccentHover = Color.FromArgb(247, 110, 84);
     public static readonly Color Good = Color.FromArgb(95, 208, 138);
-    public static readonly Color Record = Color.FromArgb(232, 88, 78);
+    public static readonly Color Record = Color.FromArgb(226, 58, 50);
 
     // Shared for the life of the process. These are handed to controls and to paint code,
     // so they must not be disposed by either - a per-access `new Font` leaked one GDI
@@ -35,7 +40,9 @@ internal static class Theme
     public static readonly Font Mono = new("Consolas", 8.5f);
     public static readonly Font BodyBold = new("Segoe UI", 9f, FontStyle.Bold);
     public static readonly Font Large = new("Segoe UI", 11f);
-    public static readonly Font PageTitle = new("Segoe UI", 10.5f, FontStyle.Bold);
+    /// <summary>Bold and a little larger, standing in for the poster-style condensed
+    /// headline in the mockups - Windows has no guaranteed condensed display face.</summary>
+    public static readonly Font PageTitle = new("Segoe UI", 14f, FontStyle.Bold);
 }
 
 /// <summary>
