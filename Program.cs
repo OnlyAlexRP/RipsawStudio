@@ -1,12 +1,35 @@
+using System.Reflection;
+using System.Runtime.Loader;
 using RipsawStudio.UI;
 
 namespace RipsawStudio;
 
 internal static class Program
 {
+    /// <summary>
+    /// The portable release keeps NAudio / Vortice / SharpGen DLLs inside their own
+    /// subfolders instead of the root (see RipsawStudio.csproj's OrganizeReleaseFolder
+    /// target). The default probing only looks next to the exe, so this teaches the
+    /// runtime where else to look. It must be wired up before anything touches a type
+    /// from those assemblies, hence it's the very first thing Main does.
+    /// </summary>
+    private static Assembly? ResolveFromSubfolders(AssemblyLoadContext context, AssemblyName name)
+    {
+        string[] subfolders = { "NAudio", "Vortice", "SharpGen" };
+        foreach (string folder in subfolders)
+        {
+            string candidate = Path.Combine(AppContext.BaseDirectory, folder, name.Name + ".dll");
+            if (File.Exists(candidate))
+                return context.LoadFromAssemblyPath(candidate);
+        }
+        return null;
+    }
+
     [STAThread]
     private static void Main(string[] args)
     {
+        AssemblyLoadContext.Default.Resolving += ResolveFromSubfolders;
+
         if (args.Any(a => a.Equals("--diag", StringComparison.OrdinalIgnoreCase)))
         {
             RunDiagnostics();

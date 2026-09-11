@@ -136,7 +136,8 @@ internal sealed class Card : Panel
         _y += 26;
     }
 
-    public void AddHint(string text)
+    /// <summary>Returns the label, so callers whose hint text can change later can update it in place.</summary>
+    public Label AddHint(string text)
     {
         int lines = text.Count(c => c == '\n') + 1;
         var label = new Label
@@ -150,6 +151,7 @@ internal sealed class Card : Panel
         label.SetBounds(Pad, _y - 4, Width - Pad * 2, 14 * lines);
         Controls.Add(label);
         _y += 14 * lines + 4;
+        return label;
     }
 
     public void AddText(string text, bool dim = false)

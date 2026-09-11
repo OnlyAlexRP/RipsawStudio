@@ -127,9 +127,16 @@ public sealed class MainForm : Form
             _bar.BringToFront();
             if (_openPage is { } page)
             {
-                _panel.ShowPage(page);
+                // Show() has to run before ShowPage(): ShowPage can reload the recent-files
+                // list, which fetches shell thumbnails on a background thread and marshals
+                // each one back via BeginInvoke - that throws (silently, inside a try/catch)
+                // when the panel's window handle does not exist yet, which is exactly the
+                // panel's state before its first Show(). Calling Show() first means the
+                // handle - and RecentList's - already exists by the time ShowPage runs, so
+                // those thumbnails load instead of quietly failing.
                 _panel.Opacity = 1;
                 _panel.Show();
+                _panel.ShowPage(page);
                 _panel.BringToFront();
                 _bar.BringToFront();
                 _bar.ActivePage = page;
@@ -218,6 +225,7 @@ public sealed class MainForm : Form
         {
             _engine.Audio.MicVolume = _settings.MicVolume;
             _engine.Audio.MicMuted = _settings.MicMuted;
+            _engine.Audio.MicDucking = _settings.MicDucking;
         };
         _panel.ReplaySettingsChanged += (_, _) => ApplyReplaySettings();
         _panel.SaveReplayClicked += async (_, _) => await SaveReplay();
@@ -258,7 +266,7 @@ public sealed class MainForm : Form
 
     private void ApplyRecordSettings()
     {
-        _engine.RecordSettings.OutputFolder = _settings.OutputFolder;
+        _engine.RecordSettings.OutputFolder = _settings.RecordsFolder;
         _engine.RecordSettings.VideoBitrateKbps = _settings.VideoBitrateKbps;
         _engine.RecordSettings.AudioBitrateKbps = _settings.AudioBitrateKbps;
         _engine.RecordSettings.AudioOffsetMs = _settings.AudioOffsetMs;
@@ -456,13 +464,21 @@ public sealed class MainForm : Form
         bool wasClosed = _openPage is null;
         if (page is { } shown)
         {
-            _panel.ShowPage(shown);
+            // Show() has to run before ShowPage(): see the matching comment in the
+            // constructor's startup block - ShowPage can reload the recent-files list, which
+            // fetches shell thumbnails on a background thread and marshals each one back via
+            // BeginInvoke, and that silently fails while the panel's window handle does not
+            // exist yet, which is exactly its state before this first Show().
             if (wasClosed)
             {
                 LayoutOverlays();
                 if (!_panel.Visible) { _panel.Opacity = 0; _panel.Show(); }
                 _panel.BringToFront();
                 _bar.BringToFront();
+            }
+            _panel.ShowPage(shown);
+            if (wasClosed)
+            {
                 // Same reasoning as SetMenuOpen's _bar.Activate(): the panel is a freshly shown
                 // owned window too, so its first click needs this or it's swallowed as an
                 // activation click instead of reaching whatever control the user meant to hit.
@@ -734,7 +750,7 @@ public sealed class MainForm : Form
     }
 
     private MicOptions CurrentMicOptions() => new(_settings.MicDeviceId, _settings.MicEnabled,
-        _settings.MicVolume, _settings.MicMuted, _settings.MicMonitor, _settings.MicOffsetMs);
+        _settings.MicVolume, _settings.MicMuted, _settings.MicMonitor, _settings.MicOffsetMs, _settings.MicDucking);
 
     private void ToggleMicMute()
     {
@@ -782,7 +798,7 @@ public sealed class MainForm : Form
                 return;
             }
             string name = $"Capture_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4";
-            await _engine.StartRecordingAsync(Path.Combine(_settings.OutputFolder, name));
+            await _engine.StartRecordingAsync(Path.Combine(_settings.RecordsFolder, name));
             _panel.SetRecording(true);
             _recordLight.Start();
         }
@@ -808,7 +824,7 @@ public sealed class MainForm : Form
             string name = $"Replay_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4";
             _toast.Show($"Saving the last {_settings.ReplaySaveSeconds} seconds...", false);
             string path = await _engine.SaveReplayAsync(_settings.ReplaySaveSeconds,
-                                                        Path.Combine(_settings.OutputFolder, name));
+                                                        Path.Combine(_settings.ReplayFolder, name));
             _toast.Show("Saved " + Path.GetFileName(path), false);
             _panel.RefreshRecent();
         }
@@ -833,14 +849,36 @@ public sealed class MainForm : Form
             : "Instant replay off", false);
     }
 
+    /// <summary>
+    /// Opens the Records folder, or - in the common case where Records, Replay and
+    /// Screenshots are still the three stock subfolders of one RipsawStudio folder - that
+    /// shared parent instead, so all three show up in the same Explorer window.
+    /// </summary>
     private void OpenOutputFolder()
     {
+        string target = CommonOutputRoot();
         try
         {
-            Directory.CreateDirectory(_settings.OutputFolder);
-            System.Diagnostics.Process.Start("explorer.exe", _settings.OutputFolder);
+            Directory.CreateDirectory(target);
+            System.Diagnostics.Process.Start("explorer.exe", target);
         }
         catch (Exception ex) { _toast.Show("Could not open the folder: " + ex.Message, true); }
+    }
+
+    private string CommonOutputRoot()
+    {
+        static string? ParentOf(string path)
+        {
+            try { return Path.GetDirectoryName(Path.GetFullPath(path)); }
+            catch { return null; }
+        }
+
+        string? root = ParentOf(_settings.RecordsFolder);
+        if (root is not null &&
+            string.Equals(root, ParentOf(_settings.ReplayFolder), StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(root, ParentOf(_settings.ScreenshotsFolder), StringComparison.OrdinalIgnoreCase))
+            return root;
+        return _settings.RecordsFolder;
     }
 
     // ---- profiles ---------------------------------------------------------------------------
@@ -890,7 +928,8 @@ public sealed class MainForm : Form
         try
         {
             string name = $"Shot_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.png";
-            await _engine.ScreenshotAsync(Path.Combine(_settings.OutputFolder, name));
+            await _engine.ScreenshotAsync(Path.Combine(_settings.ScreenshotsFolder, name));
+            _panel.RefreshRecent();
         }
         catch (Exception ex) { _toast.Show("Snapshot: " + ex.Message, true); }
     }

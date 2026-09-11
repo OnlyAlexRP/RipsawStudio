@@ -6,7 +6,7 @@ internal enum Icon
 {
     None, Monitor, Record, Gear, Info, Image, Speaker, Sliders,
     Sun, Contrast, Droplet, Refresh, Download, Stopwatch, Folder,
-    Camera, Stop, Play, Chip, Keyboard, Mic, Rewind, Profile,
+    Camera, Stop, Play, Chip, Keyboard, Mic, Rewind, Profile, Trash,
 }
 
 /// <summary>
@@ -251,6 +251,31 @@ internal static class Icons
             case Icon.Profile:
                 g.DrawEllipse(pen, r.X + r.Width * 0.28f, r.Y + r.Height * 0.06f, r.Width * 0.44f, r.Height * 0.44f);
                 g.DrawArc(pen, r.X + r.Width * 0.08f, r.Y + r.Height * 0.56f, r.Width * 0.84f, r.Height * 0.8f, 180, 180);
+                break;
+
+            case Icon.Trash:
+                g.DrawLine(pen, r.X + r.Width * 0.14f, r.Y + r.Height * 0.24f,
+                                r.Right - r.Width * 0.14f, r.Y + r.Height * 0.24f);
+                g.DrawLines(pen, new[]
+                {
+                    new PointF(r.X + r.Width * 0.38f, r.Y + r.Height * 0.24f),
+                    new PointF(r.X + r.Width * 0.42f, r.Y),
+                    new PointF(r.Right - r.Width * 0.42f, r.Y),
+                    new PointF(r.Right - r.Width * 0.38f, r.Y + r.Height * 0.24f),
+                });
+                g.DrawLines(pen, new[]
+                {
+                    new PointF(r.X + r.Width * 0.22f, r.Y + r.Height * 0.24f),
+                    new PointF(r.X + r.Width * 0.28f, r.Bottom),
+                    new PointF(r.Right - r.Width * 0.28f, r.Bottom),
+                    new PointF(r.Right - r.Width * 0.22f, r.Y + r.Height * 0.24f),
+                });
+                g.DrawLine(pen, r.X + r.Width * 0.38f, r.Y + r.Height * 0.4f,
+                                r.X + r.Width * 0.4f, r.Bottom - r.Height * 0.14f);
+                g.DrawLine(pen, r.X + r.Width * 0.5f, r.Y + r.Height * 0.4f,
+                                r.X + r.Width * 0.5f, r.Bottom - r.Height * 0.14f);
+                g.DrawLine(pen, r.Right - r.Width * 0.38f, r.Y + r.Height * 0.4f,
+                                r.Right - r.Width * 0.4f, r.Bottom - r.Height * 0.14f);
                 break;
         }
 

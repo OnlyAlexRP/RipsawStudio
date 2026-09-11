@@ -6,19 +6,41 @@ namespace RipsawStudio.Record;
 
 /// <summary>
 /// Keeps the last minute or so of play ready to save. Since a sink writer can't ring-buffer,
-/// the ring is made of whole short files instead, rolled over every couple of seconds with
-/// the oldest deleted as new ones appear. Saving joins the covering segments into one MP4
-/// without re-encoding the picture (see <see cref="ReplayMuxer"/>); sound is kept separately
-/// in <see cref="ReplayAudioRing"/> and encoded once at save time. Rollover happens on this
+/// the ring is made of whole files instead, rolled over every few seconds with the oldest
+/// deleted as new ones appear. Saving joins the covering segments into one MP4 without
+/// re-encoding the picture (see <see cref="ReplayMuxer"/>); sound is kept separately in
+/// <see cref="ReplayAudioRing"/> and encoded once at save time. Rollover happens on this
 /// class's own thread so the capture thread never blocks on a finalise.
+///
+/// Each rollover means a brand new Media Foundation encoder session for the new segment -
+/// a fresh hardware pipeline, not just a fresh file - and that session start is the real
+/// source of the pop or skipped frame this used to show at every seam, not the join's
+/// timestamp math (each segment's frames already carry their true capture time, and the
+/// join shifts a segment by the next one's own measured start, so the two line up on the
+/// real gap between them). <see cref="SegmentSeconds"/> and the earlier <see cref="PrepareNext"/>
+/// call below cut how often that restart happens and give it far more time to finish quietly
+/// in the background, which is the improvement within reach without dropping the sink
+/// writer's built-in MP4 muxing for the buffer's live portion. Removing the restart
+/// altogether - one encoder session that just keeps running, the way OBS's or Medal's replay
+/// buffer does - means driving the H.264 encoder transform directly instead of through a
+/// sink writer, which is a materially bigger, riskier change (hardware encoder transforms on
+/// Windows are frequently asynchronous, with their own event-driven calling contract) that is
+/// worth doing as its own follow-up, built and tested incrementally, rather than landed blind.
 /// </summary>
 internal sealed class ReplayBuffer : IDisposable
 {
     /// <summary>
-    /// Two seconds trades save accuracy against rollover work. Shorter is more precise and
-    /// finalises more often; longer overshoots the requested window by more.
+    /// How long each ring piece runs, in seconds, before its own rollover. Longer pieces mean
+    /// fewer encoder-session restarts - see the class remarks above - at the cost of coarser
+    /// trimming (a save's start can land up to one piece early) and a little more overshoot
+    /// past the requested window before the oldest piece is dropped. Scaled to the buffer
+    /// itself: a 15 s buffer does not want 12 s pieces, and a five-minute one should not be
+    /// restarting the encoder every couple of seconds either.
     /// </summary>
-    public const int SegmentSeconds = 2;
+    private int SegmentSeconds => EstimateSegmentSeconds(_bufferSeconds);
+
+    /// <summary>The <see cref="SegmentSeconds"/> a buffer of this length would use - exposed for the UI hint.</summary>
+    public static int EstimateSegmentSeconds(int bufferSeconds) => Math.Clamp(bufferSeconds / 6, 4, 12);
 
     private readonly object _writeLock = new();
     private readonly object _ringLock = new();
@@ -338,6 +360,13 @@ internal sealed class ReplayBuffer : IDisposable
         _current = replacement;
         _segmentStartHns = nowHns;
         _openSeconds = 0;
+
+        // Starts building the segment after this one right away, rather than waiting for
+        // WriteVideo's own 60%-elapsed check further down. That check stays as a fallback,
+        // but kicking this off here gives the background encoder session the new segment's
+        // whole length to get going instead of whatever was left of the old one - the surest
+        // way to make sure a swap is never waiting on it.
+        PrepareNext();
 
         if (finished is null || finishedPath is null) return;
 

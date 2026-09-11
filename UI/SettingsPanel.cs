@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Drawing.Drawing2D;
 using NAudio.CoreAudioApi;
 using RipsawStudio.Audio;
@@ -63,7 +64,9 @@ internal sealed class SettingsPanel : Form
     private readonly NumericField _micOffset = new();
     private readonly NumericField _replayBuffer = new();
     private readonly NumericField _replaySave = new();
-    private readonly TextBox _folder = new();
+    private readonly TextBox _recordsFolder = new();
+    private readonly TextBox _replayFolder = new();
+    private readonly TextBox _screenshotsFolder = new();
 
     private readonly FlatCheck _vsync = new();
     private readonly FlatCheck _passthrough = new();
@@ -75,6 +78,7 @@ internal sealed class SettingsPanel : Form
     private readonly FlatCheck _micEnabled = new();
     private readonly FlatCheck _micMuted = new();
     private readonly FlatCheck _micMonitor = new();
+    private readonly FlatCheck _micDucking = new();
     private readonly FlatCheck _replayEnabled = new();
 
     private readonly FlatButton _startStop = new();
@@ -83,12 +87,16 @@ internal sealed class SettingsPanel : Form
     private readonly FlatButton _snapshot = new();
     private readonly FlatButton _openFolder = new();
     private readonly FlatButton _saveReplay = new();
+    private readonly FlatButton _deleteRecent = new();
+    private readonly FlatButton _openRecentFolder = new();
     private readonly LevelMeter _meter = new();
     private readonly LevelMeter _micMeter = new();
     private readonly Label _statusLine = new();
     private readonly Label _recordState = new();
     private readonly Label _replayState = new();
     private readonly RecentList _recent = new();
+    /// <summary>Recreated on every rebuild of the Record page; kept so "Keep" can update its wording live.</summary>
+    private Label _replayHint = new();
     /// <summary>Compact live/FPS/resolution readout, formerly the bottom chip on the nav rail.</summary>
     private readonly Label _liveStatus = new();
 
@@ -179,11 +187,12 @@ internal sealed class SettingsPanel : Form
         _profile, _micDevice,
         _brightness, _contrast, _saturation, _volume, _micVolume,
         _brightnessValue, _contrastValue, _saturationValue, _volumeValue, _micVolumeValue,
-        _audioBuffer, _audioRestart, _videoBitrate, _audioBitrate, _audioOffset, _folder,
+        _audioBuffer, _audioRestart, _videoBitrate, _audioBitrate, _audioOffset,
+        _recordsFolder, _replayFolder, _screenshotsFolder,
         _micOffset, _replayBuffer, _replaySave,
         _vsync, _passthrough, _exclusive, _hardware, _onTop, _autoStart, _showStats,
-        _micEnabled, _micMuted, _micMonitor, _replayEnabled,
-        _startStop, _rescan, _record, _snapshot, _openFolder, _saveReplay,
+        _micEnabled, _micMuted, _micMonitor, _micDucking, _replayEnabled,
+        _startStop, _rescan, _record, _snapshot, _openFolder, _saveReplay, _deleteRecent, _openRecentFolder,
         _meter, _micMeter, _statusLine, _recordState, _replayState, _recent, _liveStatus,
     }.Concat(_keyFields.Values);
 
@@ -210,14 +219,17 @@ internal sealed class SettingsPanel : Form
         Configure(_replayBuffer, 15, 300, 15);
         Configure(_replaySave, 5, 300, 5);
 
-        _folder.BackColor = Theme.Field;
-        _folder.ForeColor = Theme.Text;
-        _folder.BorderStyle = BorderStyle.None;
-        _folder.ReadOnly = true;
-        // A single-line TextBox sizes itself to the font and ignores Height, which left it
-        // sitting short of the row and misaligned with the browse button beside it.
-        _folder.Multiline = true;
-        _folder.WordWrap = false;
+        foreach (var folder in new[] { _recordsFolder, _replayFolder, _screenshotsFolder })
+        {
+            folder.BackColor = Theme.Field;
+            folder.ForeColor = Theme.Text;
+            folder.BorderStyle = BorderStyle.None;
+            folder.ReadOnly = true;
+            // A single-line TextBox sizes itself to the font and ignores Height, which left
+            // it sitting short of the row and misaligned with the browse button beside it.
+            folder.Multiline = true;
+            folder.WordWrap = false;
+        }
 
         _vsync.Text = "Wait for vsync (no tearing)";
         _passthrough.Text = "Play the sound through the output";
@@ -229,6 +241,7 @@ internal sealed class SettingsPanel : Form
         _micEnabled.Text = "Mix a microphone into recordings";
         _micMuted.Text = "Mute the microphone";
         _micMonitor.Text = "Hear yourself in the monitor too";
+        _micDucking.Text = "Duck the game while you talk";
         _replayEnabled.Text = "Keep the recent past ready to save";
 
         _startStop.ButtonRole = FlatButton.Role.Accent;
@@ -246,6 +259,13 @@ internal sealed class SettingsPanel : Form
         _saveReplay.ButtonRole = FlatButton.Role.Accent;
         _saveReplay.Glyph = RipsawStudio.UI.Icon.Rewind;
         _saveReplay.Text = "Save replay";
+        // Icon-only and small on purpose: this sits in a card header, not the button row,
+        // and it is destructive, so it should not read as an equally-weighted action.
+        _deleteRecent.Glyph = RipsawStudio.UI.Icon.Trash;
+        _deleteRecent.Text = "";
+        // Same header, same treatment - a quick way to Explorer without leaving the card.
+        _openRecentFolder.Glyph = RipsawStudio.UI.Icon.Folder;
+        _openRecentFolder.Text = "";
 
         foreach (var definition in ShortcutCatalog.All)
         {
@@ -351,6 +371,7 @@ internal sealed class SettingsPanel : Form
                 _replaySave.SetValueSilently(_replayBuffer.Value);
             }
             _replaySave.Maximum = _replayBuffer.Value;
+            _replayHint.Text = ReplayHintText();
             Raise(ReplaySettingsChanged);
         };
         _replaySave.ValueChanged += (_, _) => { _settings.ReplaySaveSeconds = _replaySave.Value; Raise(ReplaySettingsChanged); };
@@ -365,6 +386,8 @@ internal sealed class SettingsPanel : Form
         _micEnabled.CheckedChanged += (_, _) => { _settings.MicEnabled = _micEnabled.Checked; Raise(MicSettingsChanged); };
         _micMonitor.CheckedChanged += (_, _) => { _settings.MicMonitor = _micMonitor.Checked; Raise(MicSettingsChanged); };
         _micMuted.CheckedChanged += (_, _) => { _settings.MicMuted = _micMuted.Checked; Raise(MicLevelChanged); };
+        // Live, like gain and mute above - flipping this should not glitch the audio graph.
+        _micDucking.CheckedChanged += (_, _) => { _settings.MicDucking = _micDucking.Checked; Raise(MicLevelChanged); };
         _replayEnabled.CheckedChanged += (_, _) => { _settings.ReplayEnabled = _replayEnabled.Checked; Raise(ReplaySettingsChanged); };
 
         _startStop.Click += (_, _) => StartStopClicked?.Invoke(this, EventArgs.Empty);
@@ -373,6 +396,8 @@ internal sealed class SettingsPanel : Form
         _snapshot.Click += (_, _) => SnapshotClicked?.Invoke(this, EventArgs.Empty);
         _openFolder.Click += (_, _) => OpenOutputFolder();
         _saveReplay.Click += (_, _) => SaveReplayClicked?.Invoke(this, EventArgs.Empty);
+        _deleteRecent.Click += (_, _) => DeleteAllRecent();
+        _openRecentFolder.Click += (_, _) => OpenOutputFolder();
     }
 
     /// <summary>Cards are laid out for the panel's size, so they are built once it is known.</summary>
@@ -492,19 +517,10 @@ internal sealed class SettingsPanel : Form
         var recording = new Card("Recording", RipsawStudio.UI.Icon.Record, columnWidth);
         recording.AddHeaderAction("Reset", ResetRecording);
 
-        recording.AddRow("Folder", _folder, recording.FieldWidth - 40, "");
-        var browse = new FlatButton { Text = "", Glyph = RipsawStudio.UI.Icon.Folder };
-        browse.SetBounds(recording.FieldLeft + recording.FieldWidth - 34, _folder.Top - 1, 34, 26);
-        browse.Click += (_, _) =>
-        {
-            using var dialog = new FolderBrowserDialog { SelectedPath = _folder.Text };
-            if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            _folder.Text = dialog.SelectedPath;
-            _settings.OutputFolder = dialog.SelectedPath;
-            RecordingSettingsChanged?.Invoke(this, EventArgs.Empty);
-            _recent.Reload(_settings.OutputFolder);
-        };
-        recording.Controls.Add(browse);
+        AddFolderRow(recording, "Records", _recordsFolder, v => _settings.RecordsFolder = v,
+                     () => Raise(RecordingSettingsChanged));
+        AddFolderRow(recording, "Screenshots", _screenshotsFolder, v => _settings.ScreenshotsFolder = v,
+                     () => Raise(RecordingSettingsChanged));
 
         recording.AddRow("Video", _videoBitrate, 88, "kbps");
         recording.AddRow("Audio", _audioBitrate, 88, "kbps");
@@ -524,15 +540,18 @@ internal sealed class SettingsPanel : Form
         microphone.AddSpace(4);
         microphone.AddCheck(_micMuted);
         microphone.AddCheck(_micMonitor);
+        microphone.AddCheck(_micDucking);
         microphone.AddRow("Delay", _micOffset, 88, "ms");
-        microphone.AddHint("Your voice is mixed in ahead of the encoder, so it lands in recordings\nand in saved replays. It is kept out of the monitor by default - hearing\nyourself through any delay is unpleasant.");
+        microphone.AddHint("Your voice is mixed in ahead of the encoder, so it lands in recordings\nand in saved replays. It is kept out of the monitor by default - hearing\nyourself through any delay is unpleasant.\nDucking fades the game down while you talk and back up 20 ms after,\nrather than snapping it - like Discord's voice ducking.");
         left.Add(microphone.Finish());
 
         var replay = new Card("Instant replay", RipsawStudio.UI.Icon.Rewind, columnWidth);
         replay.AddCheck(_replayEnabled);
+        AddFolderRow(replay, "Replay", _replayFolder, v => _settings.ReplayFolder = v,
+                     () => Raise(ReplaySettingsChanged));
         replay.AddRow("Keep", _replayBuffer, 88, "seconds");
         replay.AddRow("Save", _replaySave, 88, "seconds of it");
-        replay.AddHint($"The buffer runs while the preview is live, writing {ReplayBuffer.SegmentSeconds}-second pieces\nto a temporary folder and dropping the oldest. Saving joins the last few\nback together without re-encoding, so it takes a moment, not a minute.");
+        _replayHint = replay.AddHint(ReplayHintText());
         replay.AddSpace(4);
         replay.AddMono(_replayState, 2);
         replay.AddButtonsFilled(_saveReplay);
@@ -543,13 +562,80 @@ internal sealed class SettingsPanel : Form
         right.Add(status.Finish());
 
         var recent = new Card("Recent files", RipsawStudio.UI.Icon.Folder, columnWidth);
-        recent.AddHeaderAction("Refresh", () => _recent.Reload(_settings.OutputFolder));
+        recent.AddHeaderAction("Refresh", ReloadRecent);
+        // Both sit just to the left of the "Refresh" link, which AddHeaderAction places at
+        // Width - Pad - 60 - and to the left of each other, nearest action outermost.
+        _deleteRecent.SetBounds(columnWidth - Card.Pad - 60 - 6 - 22, 9, 22, 22);
+        recent.Controls.Add(_deleteRecent);
+        _openRecentFolder.SetBounds(columnWidth - Card.Pad - 60 - 6 - 22 - 6 - 22, 9, 22, 22);
+        recent.Controls.Add(_openRecentFolder);
         _recent.SetBounds(Card.Pad, 46, columnWidth - Card.Pad * 2, 232);
         recent.Controls.Add(_recent);
         recent.AddSpace(238);
         right.Add(recent.Finish());
 
         LayoutColumns(page, left, right);
+    }
+
+    /// <summary>A "Folder" row plus its browse button, shared by Records, Replay and Screenshots.</summary>
+    private void AddFolderRow(Card card, string label, TextBox field, Action<string> apply, Action notify)
+    {
+        card.AddRow(label, field, card.FieldWidth - 40, "");
+        var browse = new FlatButton { Text = "", Glyph = RipsawStudio.UI.Icon.Folder };
+        browse.SetBounds(card.FieldLeft + card.FieldWidth - 34, field.Top - 1, 34, 26);
+        browse.Click += (_, _) =>
+        {
+            using var dialog = new FolderBrowserDialog { SelectedPath = field.Text };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            field.Text = dialog.SelectedPath;
+            apply(dialog.SelectedPath);
+            notify();
+            ReloadRecent();
+        };
+        card.Controls.Add(browse);
+    }
+
+    private void ReloadRecent() =>
+        _recent.Reload(_settings.RecordsFolder, _settings.ReplayFolder, _settings.ScreenshotsFolder);
+
+    private string ReplayHintText()
+    {
+        int segment = ReplayBuffer.EstimateSegmentSeconds(_settings.ReplayBufferSeconds);
+        return $"The buffer runs while the preview is live, writing roughly {segment}s\n" +
+               "pieces to a temporary folder and dropping the oldest. Saving joins\n" +
+               "the last few back together without re-encoding, so it takes a\n" +
+               "moment, not a minute.";
+    }
+
+    /// <summary>
+    /// Deletes every recording, replay and screenshot in the three output folders, after the
+    /// user confirms - this is the "empty everything out" button next to the recent list, not
+    /// a per-file delete, so it is worth being explicit about the blast radius before it runs.
+    /// </summary>
+    private void DeleteAllRecent()
+    {
+        if (MessageBox.Show(this,
+                "This deletes every recording, replay and screenshot currently in the Records, " +
+                "Replay and Screenshots folders. This can't be undone.",
+                "Delete all files", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
+            return;
+
+        foreach (var folder in new[] { _settings.RecordsFolder, _settings.ReplayFolder, _settings.ScreenshotsFolder })
+        {
+            if (string.IsNullOrWhiteSpace(folder)) continue;
+            try
+            {
+                if (!Directory.Exists(folder)) continue;
+                foreach (var file in Directory.EnumerateFiles(folder)
+                                              .Where(f => Path.GetExtension(f) is ".mp4" or ".png"))
+                {
+                    try { File.Delete(file); }
+                    catch { /* open elsewhere, or gone already - leave it for next time */ }
+                }
+            }
+            catch { /* folder listing failed - nothing more to do for this one */ }
+        }
+        ReloadRecent();
     }
 
     /// <summary>
@@ -724,7 +810,7 @@ internal sealed class SettingsPanel : Form
             content.Visible = key == page;
             if (key == page) content.Top = 0;
         }
-        if (page == Page.Record) _recent.Reload(_settings.OutputFolder);
+        if (page == Page.Record) ReloadRecent();
         UpdateScrollbar();
         PageShown?.Invoke(this, page);
     }
@@ -925,6 +1011,7 @@ internal sealed class SettingsPanel : Form
         _settings.MicMuted = defaults.MicMuted;
         _settings.MicMonitor = defaults.MicMonitor;
         _settings.MicOffsetMs = defaults.MicOffsetMs;
+        _settings.MicDucking = defaults.MicDucking;
         LoadFromSettings();
         MicSettingsChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -1003,12 +1090,29 @@ internal sealed class SettingsPanel : Form
         _binding = wasBinding;
     }
 
+    /// <summary>
+    /// Opens the Records folder, or - when Records, Replay and Screenshots are still the
+    /// three stock subfolders of one RipsawStudio folder - that shared parent instead, so
+    /// all three show up in the same Explorer window.
+    /// </summary>
     private void OpenOutputFolder()
     {
+        static string? ParentOf(string path)
+        {
+            try { return Path.GetDirectoryName(Path.GetFullPath(path)); }
+            catch { return null; }
+        }
+
+        string? root = ParentOf(_settings.RecordsFolder);
+        string target = root is not null &&
+                         string.Equals(root, ParentOf(_settings.ReplayFolder), StringComparison.OrdinalIgnoreCase) &&
+                         string.Equals(root, ParentOf(_settings.ScreenshotsFolder), StringComparison.OrdinalIgnoreCase)
+            ? root
+            : _settings.RecordsFolder;
         try
         {
-            Directory.CreateDirectory(_settings.OutputFolder);
-            System.Diagnostics.Process.Start("explorer.exe", _settings.OutputFolder);
+            Directory.CreateDirectory(target);
+            System.Diagnostics.Process.Start("explorer.exe", target);
         }
         catch { /* nothing useful to do if Explorer will not open */ }
     }
@@ -1060,7 +1164,10 @@ internal sealed class SettingsPanel : Form
         _replayBuffer.SetValueSilently(_settings.ReplayBufferSeconds);
         _replaySave.Maximum = _settings.ReplayBufferSeconds;
         _replaySave.SetValueSilently(Math.Min(_settings.ReplaySaveSeconds, _settings.ReplayBufferSeconds));
-        _folder.Text = _settings.OutputFolder;
+        _replayHint.Text = ReplayHintText();
+        _recordsFolder.Text = _settings.RecordsFolder;
+        _replayFolder.Text = _settings.ReplayFolder;
+        _screenshotsFolder.Text = _settings.ScreenshotsFolder;
 
         _vsync.Checked = _settings.VSync;
         _passthrough.Checked = _settings.AudioPassthrough;
@@ -1072,6 +1179,7 @@ internal sealed class SettingsPanel : Form
         _micEnabled.Checked = _settings.MicEnabled;
         _micMuted.Checked = _settings.MicMuted;
         _micMonitor.Checked = _settings.MicMonitor;
+        _micDucking.Checked = _settings.MicDucking;
         _replayEnabled.Checked = _settings.ReplayEnabled;
 
         SelectById(_micDevice, _settings.MicDeviceId);
@@ -1181,7 +1289,7 @@ internal sealed class SettingsPanel : Form
     {
         _record.Text = recording ? "Stop" : "Record";
         _record.Glyph = recording ? RipsawStudio.UI.Icon.Stop : RipsawStudio.UI.Icon.Record;
-        if (!recording) _recent.Reload(_settings.OutputFolder);
+        if (!recording) ReloadRecent();
     }
 
     public void SetStatus(string text) => _statusLine.Text = text;
@@ -1195,7 +1303,7 @@ internal sealed class SettingsPanel : Form
     /// <summary>Re-reads every control from the settings, after something outside changed them.</summary>
     public void ReloadFromSettings() => LoadFromSettings();
 
-    public void RefreshRecent() => _recent.Reload(_settings.OutputFolder);
+    public void RefreshRecent() => ReloadRecent();
 
     public void SetReplayState(string text) => _replayState.Text = text;
 
@@ -1226,12 +1334,40 @@ internal sealed class ContentPanel : Panel
     }
 }
 
-/// <summary>Recent captures in the output folder, click to open.</summary>
+/// <summary>What a recent file is, so the tile can badge it - inferred from this app's own
+/// naming (see <see cref="MainForm"/>'s Capture_/Replay_/Shot_ prefixes) rather than stored
+/// anywhere, so it keeps working for files dropped in from an older version.</summary>
+internal enum RecentKind { Recording, Replay, Screenshot }
+
+internal readonly record struct RecentItem(string Path, string Name, string Detail, RecentKind Kind);
+
+/// <summary>
+/// Recent captures in the output folder, shown as a grid of thumbnails rather than a list of
+/// filenames - click one to open it. Thumbnails come from the shell's own thumbnail cache
+/// (see <see cref="ShellThumbnails"/>), fetched off the UI thread since a cold one can take a
+/// moment, and cached here by path so a reload does not refetch what it already has.
+/// </summary>
 internal sealed class RecentList : Control
 {
-    private (string Path, string Name, string Detail)[] _items = Array.Empty<(string, string, string)>();
+    private const int Columns = 4;
+    private const int Rows = 2;
+    private const int Gap = 8;
+    private const int Corner = 6;
+    private const int BadgeSize = 18;
+    /// <summary>How much a hovered tile grows - kept small on purpose; this is meant to read
+    /// as "smooth", not as a pop.</summary>
+    private const float HoverScale = 1.06f;
+
+    private RecentItem[] _items = Array.Empty<RecentItem>();
+    private readonly Dictionary<string, Bitmap> _thumbnails = new();
+    /// <summary>Paths with a fetch in flight. A ConcurrentDictionary (used as a set via its
+    /// keys) because, unlike the success path below, the cleanup on a failed marshal has to
+    /// run from the background thread itself - see <see cref="RequestThumbnail"/>.</summary>
+    private readonly ConcurrentDictionary<string, byte> _pending = new();
+    private float[] _scale = Array.Empty<float>();
     private int _hovered = -1;
-    private const int RowHeight = 28;
+    private readonly System.Windows.Forms.Timer _pulse = new() { Interval = 15 };
+    private readonly ToolTip _tip = new() { AutomaticDelay = 300, ReshowDelay = 100, InitialDelay = 300 };
 
     public RecentList()
     {
@@ -1239,33 +1375,128 @@ internal sealed class RecentList : Control
         BackColor = Theme.Card;
         Cursor = Cursors.Hand;
         TabStop = false;
+        _pulse.Tick += (_, _) => Animate();
     }
 
-    public void Reload(string folder)
+    /// <summary>Merges the newest files across all of the given folders (Records, Replay, Screenshots).</summary>
+    public void Reload(params string[] folders)
+    {
+        try
+        {
+            _items = folders
+                .Where(f => !string.IsNullOrWhiteSpace(f))
+                .SelectMany(FilesIn)
+                .OrderByDescending(f => f.LastWriteTime)
+                .Take(Columns * Rows)
+                .Select(f => new RecentItem(f.FullName, f.Name,
+                    $"{f.LastWriteTime:dd MMM HH:mm}   {f.Length / 1024.0 / 1024.0:0.0} MB", KindOf(f.Name)))
+                .ToArray();
+        }
+        catch
+        {
+            _items = Array.Empty<RecentItem>();
+        }
+
+        _scale = new float[_items.Length];
+        Array.Fill(_scale, 1f);
+        _hovered = -1;
+        _tip.SetToolTip(this, null);
+
+        // Drop cached thumbnails for files that fell out of the top 8, so a long session
+        // cannot pile up GDI bitmaps for clips nobody is looking at any more.
+        var keep = new HashSet<string>(_items.Select(i => i.Path));
+        foreach (var stale in _thumbnails.Keys.Where(k => !keep.Contains(k)).ToArray())
+        {
+            _thumbnails[stale].Dispose();
+            _thumbnails.Remove(stale);
+        }
+
+        foreach (var item in _items) RequestThumbnail(item.Path);
+        Invalidate();
+    }
+
+    /// <summary>Recording and replay are both .mp4 and cannot be told apart by extension - the
+    /// filename prefix this app itself writes them with is what distinguishes them.</summary>
+    private static RecentKind KindOf(string fileName)
+    {
+        if (fileName.StartsWith("Replay_", StringComparison.OrdinalIgnoreCase)) return RecentKind.Replay;
+        if (fileName.StartsWith("Shot_", StringComparison.OrdinalIgnoreCase)) return RecentKind.Screenshot;
+        if (string.Equals(Path.GetExtension(fileName), ".png", StringComparison.OrdinalIgnoreCase)) return RecentKind.Screenshot;
+        return RecentKind.Recording;
+    }
+
+    private static IEnumerable<FileInfo> FilesIn(string folder)
     {
         try
         {
             var directory = new DirectoryInfo(folder);
-            _items = !directory.Exists
-                ? Array.Empty<(string, string, string)>()
-                : directory.EnumerateFiles()
-                    .Where(f => f.Extension is ".mp4" or ".png")
-                    .OrderByDescending(f => f.LastWriteTime)
-                    .Take(8)
-                    .Select(f => (f.FullName, f.Name,
-                        $"{f.LastWriteTime:dd MMM HH:mm}   {f.Length / 1024.0 / 1024.0:0.0} MB"))
-                    .ToArray();
+            return !directory.Exists
+                ? Enumerable.Empty<FileInfo>()
+                : directory.EnumerateFiles().Where(f => f.Extension is ".mp4" or ".png");
         }
         catch
         {
-            _items = Array.Empty<(string, string, string)>();
+            return Enumerable.Empty<FileInfo>();
         }
-        Invalidate();
+    }
+
+    private void RequestThumbnail(string path)
+    {
+        if (_thumbnails.ContainsKey(path) || !_pending.TryAdd(path, 0)) return;
+
+        var tile = TileSize();
+        int pixelSize = Math.Max(64, Math.Max(tile.Width, tile.Height) * 2);
+        Task.Run(() =>
+        {
+            var bmp = ShellThumbnails.Load(path, pixelSize);
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    _pending.TryRemove(path, out _);
+                    if (bmp is not null && Array.Exists(_items, i => i.Path == path))
+                    {
+                        _thumbnails[path] = bmp;
+                        Invalidate();
+                    }
+                    else bmp?.Dispose();
+                });
+            }
+            catch
+            {
+                // BeginInvoke throws when the handle does not exist yet - notably, the very
+                // first Reload() of a session, which SettingsPanel's ShowPage can trigger
+                // before the panel's owning window has ever been Shown - or when it has since
+                // been destroyed. Either way the marshal above never ran, so path has to be
+                // freed here instead: left in _pending, it would silently block every future
+                // Reload() from ever retrying this file's thumbnail for the rest of the
+                // session, even once the handle exists again.
+                _pending.TryRemove(path, out _);
+                bmp?.Dispose();
+            }
+        });
+    }
+
+    private Size TileSize()
+    {
+        int w = (Width - (Columns - 1) * Gap) / Columns;
+        int h = (Height - (Rows - 1) * Gap) / Rows;
+        return new Size(Math.Max(1, w), Math.Max(1, h));
+    }
+
+    private Rectangle TileRect(int index)
+    {
+        var size = TileSize();
+        int col = index % Columns;
+        int row = index / Columns;
+        return new Rectangle(col * (size.Width + Gap), row * (size.Height + Gap), size.Width, size.Height);
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.Clear(Theme.Card);
 
         if (_items.Length == 0)
@@ -1275,45 +1506,186 @@ internal sealed class RecentList : Control
             return;
         }
 
-        for (int i = 0; i < _items.Length; i++)
+        for (int i = 0; i < _items.Length; i++) DrawTile(g, i);
+    }
+
+    private void DrawTile(Graphics g, int index)
+    {
+        var rect = TileRect(index);
+        float scale = index < _scale.Length ? _scale[index] : 1f;
+
+        // Each tile zooms about its own centre rather than the grid's, so neighbours do not
+        // visibly shift when one of them grows - the "fade zoom" is meant to feel local.
+        var state = g.Save();
+        float cx = rect.X + rect.Width / 2f, cy = rect.Y + rect.Height / 2f;
+        g.TranslateTransform(cx, cy);
+        g.ScaleTransform(scale, scale);
+        g.TranslateTransform(-cx, -cy);
+
+        using (var shape = FlatButton.Rounded(rect, Corner))
         {
-            var row = new Rectangle(0, i * RowHeight, Width, RowHeight - 2);
-            if (i == _hovered)
+            var oldClip = g.Clip;
+            try
             {
-                using var back = new SolidBrush(Theme.Hover);
-                using var path = FlatButton.Rounded(row, 5);
-                g.FillPath(back, path);
+                g.SetClip(shape, CombineMode.Intersect);
+                using (var back = new SolidBrush(Theme.Field)) g.FillRectangle(back, rect);
+                if (_thumbnails.TryGetValue(_items[index].Path, out var bmp)) DrawCover(g, bmp, rect);
+
+                // The zoom alone barely reads as an effect at 6% - a soft wash brightening in
+                // step with it is what actually makes the hover look intentional, not jittery.
+                float hoverT = Math.Clamp((scale - 1f) / (HoverScale - 1f), 0f, 1f);
+                if (hoverT > 0.01f)
+                    using (var wash = new SolidBrush(Color.FromArgb((int)(50 * hoverT), Color.White)))
+                        g.FillRectangle(wash, rect);
             }
-            TextRenderer.DrawText(g, _items[i].Name, Theme.Body,
-                new Rectangle(row.X + 8, row.Y, row.Width - 150, row.Height), Theme.Text,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.PathEllipsis);
-            TextRenderer.DrawText(g, _items[i].Detail, Theme.Small,
-                new Rectangle(row.Right - 148, row.Y, 140, row.Height), Theme.TextFaint,
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+            finally { g.Clip = oldClip; oldClip.Dispose(); }
         }
+
+        var badge = new RectangleF(rect.X + 6, rect.Bottom - 6 - BadgeSize, BadgeSize, BadgeSize);
+        using (var badgeBack = new SolidBrush(Color.FromArgb(190, 0, 0, 0))) g.FillEllipse(badgeBack, badge);
+        Icons.Draw(g, IconFor(_items[index].Kind),
+            RectangleF.Inflate(badge, -BadgeSize * 0.22f, -BadgeSize * 0.22f), Color.White, 1.5f);
+
+        // Kept off unless the tile is hovered, so the grid is nothing but thumbnails at rest -
+        // this is strictly a "clean up one I don't need" affordance, not a default fixture.
+        if (index == _hovered)
+        {
+            var trash = TrashRect(index);
+            using (var trashBack = new SolidBrush(Color.FromArgb(200, 130, 32, 32))) g.FillEllipse(trashBack, trash);
+            Icons.Draw(g, RipsawStudio.UI.Icon.Trash,
+                RectangleF.Inflate(trash, -BadgeSize * 0.24f, -BadgeSize * 0.24f), Color.White, 1.5f);
+        }
+
+        g.Restore(state);
+    }
+
+    private static RipsawStudio.UI.Icon IconFor(RecentKind kind) => kind switch
+    {
+        RecentKind.Replay => RipsawStudio.UI.Icon.Rewind,
+        RecentKind.Screenshot => RipsawStudio.UI.Icon.Camera,
+        _ => RipsawStudio.UI.Icon.Record,
+    };
+
+    private RectangleF TrashRect(int index)
+    {
+        var rect = TileRect(index);
+        return new RectangleF(rect.Right - 6 - BadgeSize, rect.Y + 6, BadgeSize, BadgeSize);
+    }
+
+    /// <summary>Fills <paramref name="dest"/> without distorting the image, cropping whichever
+    /// dimension overhangs - the same idea as CSS's <c>background-size: cover</c>.</summary>
+    private static void DrawCover(Graphics g, Image bmp, Rectangle dest)
+    {
+        float srcAspect = (float)bmp.Width / bmp.Height;
+        float dstAspect = (float)dest.Width / dest.Height;
+        RectangleF src = srcAspect > dstAspect
+            ? new RectangleF((bmp.Width - bmp.Height * dstAspect) / 2f, 0, bmp.Height * dstAspect, bmp.Height)
+            : new RectangleF(0, (bmp.Height - bmp.Width / dstAspect) / 2f, bmp.Width, bmp.Width / dstAspect);
+        g.DrawImage(bmp, dest, src, GraphicsUnit.Pixel);
+    }
+
+    private int HitTest(Point point)
+    {
+        for (int i = 0; i < _items.Length; i++)
+            if (TileRect(i).Contains(point)) return i;
+        return -1;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        int hit = e.Y / RowHeight;
-        if (hit >= _items.Length) hit = -1;
+        int hit = HitTest(e.Location);
         if (hit == _hovered) return;
         _hovered = hit;
-        Invalidate();
+        _tip.SetToolTip(this, hit >= 0 ? $"{_items[hit].Name}\n{_items[hit].Detail}" : null);
+        StartPulse();
     }
 
-    protected override void OnMouseLeave(EventArgs e) { _hovered = -1; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        if (_hovered == -1) return;
+        _hovered = -1;
+        _tip.SetToolTip(this, null);
+        StartPulse();
+    }
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
-        int hit = e.Y / RowHeight;
-        if (hit < 0 || hit >= _items.Length) return;
+        int hit = HitTest(e.Location);
+        if (hit < 0) return;
+
+        if (TrashRect(hit).Contains(e.Location)) { DeleteItem(hit); return; }
+
         try
         {
             System.Diagnostics.Process.Start(
                 new System.Diagnostics.ProcessStartInfo(_items[hit].Path) { UseShellExecute = true });
         }
         catch { /* the file may have been moved since the list was built */ }
+    }
+
+    /// <summary>
+    /// Removes one file after the user confirms - the per-tile equivalent of the "delete all"
+    /// button above the grid, for tidying up a single clip rather than emptying everything.
+    /// Updates the grid in place rather than re-scanning the folders, so the remaining tiles
+    /// simply close the gap.
+    /// </summary>
+    private void DeleteItem(int index)
+    {
+        if (index < 0 || index >= _items.Length) return;
+        var item = _items[index];
+
+        if (MessageBox.Show(this, $"Delete \"{item.Name}\"? This can't be undone.",
+                "Delete file", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
+            return;
+
+        try { File.Delete(item.Path); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "Couldn't delete this file: " + ex.Message,
+                            "Delete file", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        if (_thumbnails.TryGetValue(item.Path, out var bmp)) { bmp.Dispose(); _thumbnails.Remove(item.Path); }
+        _pending.TryRemove(item.Path, out _);
+        _items = _items.Where((_, i) => i != index).ToArray();
+        _scale = _scale.Where((_, i) => i != index).ToArray();
+        _hovered = -1;
+        _tip.SetToolTip(this, null);
+        Invalidate();
+    }
+
+    private void StartPulse() { if (!_pulse.Enabled) _pulse.Start(); }
+
+    /// <summary>Eases every tile's scale toward its target, stopping itself once settled - same
+    /// approach as <see cref="BarForm"/>'s icon hover, so the two animations in this app feel
+    /// like the same hand drew them.</summary>
+    private void Animate()
+    {
+        bool moving = false;
+        for (int i = 0; i < _scale.Length; i++)
+        {
+            float target = i == _hovered ? HoverScale : 1f;
+            float current = _scale[i];
+            float next = current + (target - current) * 0.35f;
+            if (Math.Abs(target - next) < 0.002f) next = target;
+            else moving = true;
+            _scale[i] = next;
+        }
+        Invalidate();
+        if (!moving) _pulse.Stop();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _pulse.Dispose();
+            _tip.Dispose();
+            foreach (var bmp in _thumbnails.Values) bmp.Dispose();
+            _thumbnails.Clear();
+        }
+        base.Dispose(disposing);
     }
 }
 

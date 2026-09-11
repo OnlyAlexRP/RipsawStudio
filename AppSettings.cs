@@ -83,6 +83,8 @@ public sealed class AppSettings
     public bool MicMonitor { get; set; }
     /// <summary>Positive values delay the mic relative to the game sound.</summary>
     public int MicOffsetMs { get; set; }
+    /// <summary>Duck the game audio while the mic hears you talking, like Discord's voice ducking.</summary>
+    public bool MicDucking { get; set; }
 
     // ---- instant replay ---------------------------------------------------------------
     /// <summary>Whether the rolling buffer runs while the preview is live.</summary>
@@ -94,6 +96,22 @@ public sealed class AppSettings
 
     /// <summary>GPU description to render on; null means let Windows choose.</summary>
     public string? Adapter { get; set; }
+
+    // ---- output folders -----------------------------------------------------------------
+    /// <summary>
+    /// Kept only so a settings file written before Records/Replay/Screenshots had separate
+    /// folders still deserialises - <see cref="Load"/> migrates it into
+    /// <see cref="RecordsFolder"/> once and never writes it again on purpose. Nothing else
+    /// should read this; use <see cref="RecordsFolder"/> instead.
+    /// </summary>
+    public string OutputFolder { get; set; } = DefaultRoot;
+
+    public string RecordsFolder { get; set; } = Path.Combine(DefaultRoot, "Records");
+    public string ReplayFolder { get; set; } = Path.Combine(DefaultRoot, "Replay");
+    public string ScreenshotsFolder { get; set; } = Path.Combine(DefaultRoot, "Screenshots");
+
+    private static string DefaultRoot =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "RipsawStudio");
 
     public bool VSync { get; set; }
     public ScalingMode Scaling { get; set; } = ScalingMode.Fit;
@@ -108,8 +126,6 @@ public sealed class AppSettings
     public bool AlwaysOnTop { get; set; }
     public bool AutoStart { get; set; } = true;
 
-    public string OutputFolder { get; set; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "RipsawStudio");
     public int VideoBitrateKbps { get; set; } = 25_000;
     public int AudioBitrateKbps { get; set; } = 192;
     public int AudioOffsetMs { get; set; }
@@ -141,7 +157,7 @@ public sealed class AppSettings
 
     /// <summary>
     /// Puts every tunable back to its default. The chosen card, format, audio endpoints and
-    /// output folder are kept, since re-picking those is the tedious part. Shortcuts are
+    /// output folders are kept, since re-picking those is the tedious part. Shortcuts are
     /// left alone too - they have their own reset, next to where they are edited.
     /// </summary>
     public void ResetToDefaults()
@@ -159,6 +175,7 @@ public sealed class AppSettings
         MicMuted = d.MicMuted;
         MicMonitor = d.MicMonitor;
         MicOffsetMs = d.MicOffsetMs;
+        MicDucking = d.MicDucking;
 
         ReplayEnabled = d.ReplayEnabled;
         ReplayBufferSeconds = d.ReplayBufferSeconds;
@@ -319,6 +336,21 @@ public sealed class AppSettings
                 : new AppSettings();
         }
         catch { settings = new AppSettings(); /* a corrupt settings file must never stop the app starting */ }
+
+        // A file written before Records/Replay/Screenshots had their own folders carried one
+        // OutputFolder that everything landed in. Migrate it once: if it had been pointed
+        // somewhere other than the stock default, that becomes the Records folder - the
+        // closest match to what it meant before - rather than silently reverting on upgrade.
+        // Replay and Screenshots start at their own new defaults either way, since neither
+        // folder existed as a separate concept for there to be a custom value to preserve.
+        // This only ever fires once: after it runs, RecordsFolder no longer matches its own
+        // default, so the condition below stays false on every later load.
+        if (!string.IsNullOrWhiteSpace(settings.OutputFolder) &&
+            !string.Equals(settings.OutputFolder, DefaultRoot, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(settings.RecordsFolder, Path.Combine(DefaultRoot, "Records"), StringComparison.OrdinalIgnoreCase))
+        {
+            settings.RecordsFolder = settings.OutputFolder;
+        }
 
         // A file written before profiles existed becomes the "Default" profile, so nobody
         // loses what they had set up.

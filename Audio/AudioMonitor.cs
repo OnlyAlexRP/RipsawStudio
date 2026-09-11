@@ -17,9 +17,10 @@ public sealed class AudioDataEventArgs : EventArgs
 }
 
 /// <summary>How the microphone should be captured and mixed. Passed whole so a restart can put it back.</summary>
-public sealed record MicOptions(string? DeviceId, bool Enabled, float Volume, bool Muted, bool Monitor, int OffsetMs)
+public sealed record MicOptions(string? DeviceId, bool Enabled, float Volume, bool Muted, bool Monitor, int OffsetMs,
+                                bool Ducking = false)
 {
-    public static readonly MicOptions Off = new(null, false, 1f, false, false, 0);
+    public static readonly MicOptions Off = new(null, false, 1f, false, false, 0, false);
     public bool Wanted => Enabled && !string.IsNullOrEmpty(DeviceId);
 }
 
@@ -45,6 +46,21 @@ public sealed class AudioMonitor : IDisposable
     private float[] _micFloat = Array.Empty<float>();
     private byte[] _mixBytes = Array.Empty<byte>();
     private byte[] _trimScratch = Array.Empty<byte>();
+    private float[] _gainFloat = Array.Empty<float>();
+    private byte[] _gainBytes = Array.Empty<byte>();
+
+    // ---- mic ducking --------------------------------------------------------------------
+    // Speech clears the game soundtrack; anything quieter (room tone, the mic's own hiss)
+    // should not. -12 dB is squarely in Discord's own range for this.
+    private const float DuckThreshold = 0.035f;
+    private const float DuckLevel = 0.25f;
+    /// <summary>Keeps the duck through the small gaps between words, so a sentence does not
+    /// pump the game volume open and shut between every syllable.</summary>
+    private const float DuckHoldMs = 300f;
+    /// <summary>How long the fade itself takes, either way - a hard cut is what this is for.</summary>
+    private const float DuckFadeMs = 20f;
+    private float _duckGain = 1f;
+    private float _duckHoldRemainingMs;
 
     private long _lastDataTicks;
     private long _startedTicks;
@@ -92,6 +108,22 @@ public sealed class AudioMonitor : IDisposable
     }
 
     /// <summary>
+    /// Ducks the game audio while the mic hears you talking - changed live, without
+    /// restarting anything, same as <see cref="MicVolume"/>. Turning it off snaps the duck
+    /// back open at once rather than leaving it faded down until the next block happens to
+    /// notice, in case it was switched off mid-sentence.
+    /// </summary>
+    public bool MicDucking
+    {
+        get => Mic.Ducking;
+        set
+        {
+            Mic = Mic with { Ducking = value };
+            if (!value) { _duckGain = 1f; _duckHoldRemainingMs = 0f; }
+        }
+    }
+
+    /// <summary>
     /// Restart the endpoint every N minutes even when it looks healthy. 0 disables it.
     /// Some cards degrade slowly rather than stopping outright, which the silence watchdog
     /// cannot see; a scheduled restart is the blunt fix for that.
@@ -111,17 +143,27 @@ public sealed class AudioMonitor : IDisposable
     public event EventHandler<string>? Status;
 
     private float _gain = 1f;
+    /// <summary>
+    /// Shapes the signal itself now, not just what plays back locally through passthrough -
+    /// applied once in <see cref="OnDataAvailable"/>, upstream of both the monitor and the
+    /// mix that goes to the recorder and the replay buffer, so a source that is genuinely too
+    /// hot actually comes down in what gets saved, not only in what you hear back. The
+    /// monitor's own <see cref="VolumeSampleProviderEx"/> no longer carries a second copy of
+    /// this gain - see the constant 1f in <see cref="StartCore"/> and below - since applying
+    /// it twice would make the monitor quieter than the take for the same slider position.
+    /// </summary>
     public float Volume
     {
         get => _gain;
-        set { _gain = Math.Clamp(value, 0f, 4f); if (_volume is not null) _volume.Gain = Muted ? 0f : _gain; }
+        set => _gain = Math.Clamp(value, 0f, 4f);
     }
 
     private bool _muted;
+    /// <summary>Silences your own ears only - see <see cref="Volume"/> - so muting the monitor never touches the recording.</summary>
     public bool Muted
     {
         get => _muted;
-        set { _muted = value; if (_volume is not null) _volume.Gain = value ? 0f : _gain; }
+        set { _muted = value; if (_volume is not null) _volume.Gain = value ? 0f : 1f; }
     }
 
     public static List<AudioDeviceInfo> Enumerate(DataFlow flow)
@@ -203,7 +245,7 @@ public sealed class AudioMonitor : IDisposable
                 ReadFully = true,
                 BufferDuration = TimeSpan.FromMilliseconds(Math.Max(200, TargetLatencyMs * 6)),
             };
-            _volume = new VolumeSampleProviderEx(_buffer.ToSampleProvider()) { Gain = _muted ? 0f : _gain };
+            _volume = new VolumeSampleProviderEx(_buffer.ToSampleProvider()) { Gain = _muted ? 0f : 1f };
             var mode = exclusiveOutput ? AudioClientShareMode.Exclusive : AudioClientShareMode.Shared;
             _output = new WasapiOut(outDevice, mode, true, TargetLatencyMs);
             _output.Init(_volume);
@@ -271,9 +313,74 @@ public sealed class AudioMonitor : IDisposable
         // The allowance has to clear the mic's own delay, which is held as primed silence in
         // the same FIFO - trimming to the monitor's figure alone would eat the delay whole.
         mic.Read(_micFloat, frames, Mic.OffsetMs + TargetLatencyMs * 3);
+
+        if (Mic.Ducking)
+        {
+            float micLevel = 0f;
+            for (int i = 0; i < samples; i++) micLevel = Math.Max(micLevel, Math.Abs(_micFloat[i]));
+            ApplyDucking(_mixFloat, frames, channels, format.SampleRate, micLevel);
+        }
+        else if (_duckGain != 1f)
+        {
+            // Switched off mid-fade - snap back rather than leave the game quiet forever.
+            _duckGain = 1f;
+            _duckHoldRemainingMs = 0f;
+        }
+
         for (int i = 0; i < samples; i++) _mixFloat[i] += _micFloat[i];
         PcmConvert.FromFloat(_mixFloat, samples, format, _mixBytes);
         return _mixBytes;
+    }
+
+    /// <summary>
+    /// Ducks the game track in <paramref name="mix"/> while <paramref name="micLevel"/> says
+    /// you are talking, and eases it back once you stop - the same idea as Discord's
+    /// voice-activated ducking. Detection runs once per block, but the gain itself is stepped
+    /// frame by frame at a fixed rate (<see cref="DuckFadeMs"/> from fully open to fully
+    /// ducked), so the transition is a fade rather than a jump even when a block is longer
+    /// than the fade - and it keeps fading smoothly across a block boundary rather than
+    /// snapping to a new level at the start of the next one.
+    /// </summary>
+    private void ApplyDucking(float[] mix, int frames, int channels, int sampleRate, float micLevel)
+    {
+        bool talking = micLevel >= DuckThreshold;
+        if (talking) _duckHoldRemainingMs = DuckHoldMs;
+        float target = _duckHoldRemainingMs > 0f ? DuckLevel : 1f;
+        if (!talking) _duckHoldRemainingMs = Math.Max(0f, _duckHoldRemainingMs - frames * 1000f / sampleRate);
+
+        float step = 1000f / sampleRate / DuckFadeMs;
+        for (int f = 0; f < frames; f++)
+        {
+            _duckGain = _duckGain < target
+                ? Math.Min(target, _duckGain + step)
+                : Math.Max(target, _duckGain - step);
+            if (_duckGain == 1f) continue;
+            int at = f * channels;
+            for (int ch = 0; ch < channels; ch++) mix[at + ch] *= _duckGain;
+        }
+    }
+
+    /// <summary>
+    /// Scales the card's own block by <see cref="Volume"/>, in place in a scratch buffer, so a
+    /// source that comes in too hot can actually be brought down - not just in the monitor,
+    /// in the recording and the replay buffer too. Runs before the mic is mixed in, so it
+    /// never touches the mic's own level, which has its own separate gain.
+    /// </summary>
+    private byte[] ApplyGain(byte[] source, int count, WaveFormat format, float gain)
+    {
+        int channels = format.Channels;
+        int frames = format.BlockAlign > 0 ? count / format.BlockAlign : 0;
+        int samples = frames * channels;
+        if (samples == 0) return source;
+        if (format.BlockAlign != channels * (format.BitsPerSample / 8)) return source;
+
+        if (_gainFloat.Length < samples) _gainFloat = new float[samples * 2];
+        if (_gainBytes.Length < count) _gainBytes = new byte[count * 2];
+
+        PcmConvert.ToFloat(source, count, format, _gainFloat);
+        for (int i = 0; i < samples; i++) _gainFloat[i] *= gain;
+        PcmConvert.FromFloat(_gainFloat, samples, format, _gainBytes);
+        return _gainBytes;
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
@@ -284,12 +391,20 @@ public sealed class AudioMonitor : IDisposable
         var format = CaptureFormat;
         if (format is not null) MeasurePeak(e.Buffer, e.BytesRecorded, format);
 
+        // Volume is applied here so it shapes everything downstream alike - the monitor, the
+        // recorder and the replay buffer - rather than only the local playback. A gain of
+        // exactly 1 skips the pass entirely, which is the common case.
+        byte[] source = e.Buffer;
+        if (format is not null && _gain != 1f)
+            source = ApplyGain(e.Buffer, e.BytesRecorded, format, _gain);
+
         // The recording always gets the mix; the monitor only does if you asked to hear yourself.
-        byte[] recorded = e.Buffer;
+        byte[] recorded = source;
         var mic = _mic;
         if (mic is not null && format is not null && mic.IsRunning)
-            recorded = MixMic(mic, e.Buffer, e.BytesRecorded, format);
-        byte[] monitored = Mic.Monitor ? recorded : e.Buffer;
+            recorded = MixMic(mic, source, e.BytesRecorded, format);
+        else if (_duckGain != 1f) { _duckGain = 1f; _duckHoldRemainingMs = 0f; }
+        byte[] monitored = Mic.Monitor ? recorded : source;
 
         var buffer = _buffer;
         if (buffer is not null)
@@ -411,6 +526,8 @@ public sealed class AudioMonitor : IDisposable
         _buffer = null;
         _volume = null;
         _peak = 0;
+        _duckGain = 1f;
+        _duckHoldRemainingMs = 0f;
         if (clearFormat) CaptureFormat = null;
     }
 
