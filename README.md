@@ -10,7 +10,7 @@ No wizard, no bloated suite of tools you'll never open. Ripsaw Studio is built a
 
 ## Download
 
-Go to the [Releases page](https://github.com/OnlyAlexRP/RipsawStudio/releases) and download **RipsawStudio_v1.3.zip** from the latest release.
+Go to the [Releases page](https://github.com/OnlyAlexRP/RipsawStudio/releases) and download **RipsawStudio\_v1.4.zip** from the latest release.
 
 ## Website
 
@@ -23,3 +23,4 @@ Windows 10 / 11
 ## Information required
 
 With the use and assistance of Claude AI for code restructuring prior to publication and for optimization.
+

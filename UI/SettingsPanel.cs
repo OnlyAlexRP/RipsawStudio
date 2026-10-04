@@ -185,8 +185,8 @@ internal sealed class SettingsPanel : Form
     {
         _device, _format, _aspect, _scaling, _range, _matrix, _audioIn, _audioOut, _adapter,
         _profile, _micDevice,
-        _brightness, _contrast, _saturation, _volume, _micVolume,
-        _brightnessValue, _contrastValue, _saturationValue, _volumeValue, _micVolumeValue,
+        _brightness, _contrast, _saturation, _volume, _micVolume, _artifactSmoothing,
+        _brightnessValue, _contrastValue, _saturationValue, _volumeValue, _micVolumeValue, _artifactSmoothingValue,
         _audioBuffer, _audioRestart, _videoBitrate, _audioBitrate, _audioOffset,
         _recordsFolder, _replayFolder, _screenshotsFolder,
         _micOffset, _replayBuffer, _replaySave,

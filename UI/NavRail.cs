@@ -2,8 +2,6 @@ using System.Drawing.Drawing2D;
 
 namespace RipsawStudio.UI;
 
-internal enum Page { Capture, Record, Shortcuts, Settings, About }
-
 /// <summary>
 /// The vertical page switcher down the left of the panel, plus a live status chip at the
 /// bottom so the source and frame rate stay visible while you are in the settings.
