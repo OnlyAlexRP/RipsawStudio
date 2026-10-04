@@ -14,7 +14,7 @@ Go to the [Releases page](https://github.com/OnlyAlexRP/RipsawStudio/releases) a
 
 ## Website
 
-More info: [ripsawstudio.com](http://ripsawstudio.com)
+More info: https://onlyalexrp.itch.io/ripsaw-studio
 
 ## Requirements
 
