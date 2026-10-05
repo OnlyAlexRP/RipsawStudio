@@ -324,11 +324,31 @@ public sealed class MainForm : Form
         await RefreshDevices();
         RefreshAudioDevices();
         _loading = false;
+        _ = CheckForUpdates();
 
         if (_settings.AutoStart && _panel.SelectedDevice is { SymbolicLink.Length: > 0 } && _panel.SelectedFormat is not null)
             await ToggleStreaming();
         else
             RestartAudio();
+    }
+
+    /// <summary>
+    /// Asks GitHub for the newest release, tells the About page what it found and, when
+    /// the running build is older, offers to open the download page. Never throws.
+    /// </summary>
+    private async Task CheckForUpdates()
+    {
+        var result = await UpdateChecker.CheckAsync();
+        if (IsDisposed) return;
+
+        _panel.ShowUpdateStatus(result);
+        if (!result.UpdateAvailable) return;
+
+        var choice = MessageBox.Show(this,
+            $"Ripsaw Studio {UpdateChecker.Format(result.Latest)} is available (you have {UpdateChecker.Format(UpdateChecker.Current)}).{Environment.NewLine}{Environment.NewLine}Open the download page?",
+            "Update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+        if (choice == DialogResult.Yes)
+            UpdateChecker.OpenReleasesPage();
     }
 
     protected override void OnResize(EventArgs e)

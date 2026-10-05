@@ -99,6 +99,9 @@ internal sealed class SettingsPanel : Form
     private Label _replayHint = new();
     /// <summary>Compact live/FPS/resolution readout, formerly the bottom chip on the nav rail.</summary>
     private readonly Label _liveStatus = new();
+    /// <summary>"Up to date" / "Update available" line on the About page, filled in by MainForm once the GitHub check finishes.</summary>
+    private readonly Label _updateStatus = new() { Text = "Checking for updates..." };
+    private UpdateCheckResult? _lastUpdate;
 
     /// <summary>One field per action and slot, created once and reused across rebuilds.</summary>
     private readonly Dictionary<(ShortcutAction, ShortcutSlot), KeyCaptureButton> _keyFields = new();
@@ -193,7 +196,7 @@ internal sealed class SettingsPanel : Form
         _vsync, _passthrough, _exclusive, _hardware, _onTop, _autoStart, _showStats,
         _micEnabled, _micMuted, _micMonitor, _micDucking, _replayEnabled,
         _startStop, _rescan, _record, _snapshot, _openFolder, _saveReplay, _deleteRecent, _openRecentFolder,
-        _meter, _micMeter, _statusLine, _recordState, _replayState, _recent, _liveStatus,
+        _meter, _micMeter, _statusLine, _recordState, _replayState, _recent, _liveStatus, _updateStatus,
     }.Concat(_keyFields.Values);
 
     /// <summary>One-time setup. Kept out of Build so a relayout cannot duplicate any of it.</summary>
@@ -422,6 +425,8 @@ internal sealed class SettingsPanel : Form
         LoadFromSettings();
         LoadShortcuts();
         _binding = false;
+        // AddMono resets the label's colour on every relayout, so re-apply the last result.
+        if (_lastUpdate is { } last) ShowUpdateStatus(last);
         ShowPage(_page);
     }
 
@@ -740,6 +745,27 @@ internal sealed class SettingsPanel : Form
         return version.ToString(2);
     }
 
+    /// <summary>Called by MainForm once the GitHub lookup finishes (or fails).</summary>
+    public void ShowUpdateStatus(UpdateCheckResult result)
+    {
+        _lastUpdate = result;
+        if (!result.Checked)
+        {
+            _updateStatus.Text = "Could not check for updates.";
+            _updateStatus.ForeColor = Theme.TextFaint;
+        }
+        else if (result.UpdateAvailable)
+        {
+            _updateStatus.Text = $"\u25B2  Update available: version {UpdateChecker.Format(result.Latest)}  (see Releases)";
+            _updateStatus.ForeColor = Theme.Accent;
+        }
+        else
+        {
+            _updateStatus.Text = "\u2713  You are up to date.";
+            _updateStatus.ForeColor = Theme.Good;
+        }
+    }
+
     private void BuildAbout(int columnWidth)
     {
         var page = NewPage(Page.About);
@@ -747,8 +773,10 @@ internal sealed class SettingsPanel : Form
         var right = new List<Card>();
 
         var about = new Card("Ripsaw Studio", RipsawStudio.UI.Icon.Info, columnWidth);
+        about.AddHeaderAction("Releases", UpdateChecker.OpenReleasesPage);
         about.AddText("A low-latency capture viewer and recorder for Windows.");
         about.AddText($"Version {FormatVersion(typeof(SettingsPanel).Assembly.GetName().Version)}", dim: true);
+        about.AddMono(_updateStatus, 1);
         about.AddSpace(6);
         about.AddText("Software for viewing and recording video from generic game capture cards.\n" +
                       "If your capture card's hardware causes frame drops or occasional stuttering,\n" +
