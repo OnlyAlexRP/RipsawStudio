@@ -24,3 +24,12 @@ Windows 10 / 11
 
 With the use and assistance of Claude AI for code restructuring prior to publication and for optimization.
 
+## If Windows 11 Smart App Control Blocking the Application
+
+If Windows 11 blocks the application with a message stating that "Smart App Control has blocked a potentially dangerous app", follow these steps:
+
+1 - Open the Start Menu and search for Windows Security.
+2 - Open Windows Security and select App & browser control.
+3 - Click Smart App Control settings.
+4 - Select Off to disable Smart App Control.
+5 - Try launching the application again.
