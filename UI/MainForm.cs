@@ -1,13 +1,12 @@
 using NAudio.CoreAudioApi;
 using RipsawStudio.Audio;
 using RipsawStudio.Capture;
-using RipsawStudio.Render;
 
 namespace RipsawStudio.UI;
 
 /// <summary>
-/// Video-first shell: the picture owns the whole window and every control lives in a
-/// panel that floats over it. Nothing but the picture is on screen while you play.
+/// Video-first shell: the picture owns the whole window, and the controls live in one panel
+/// that floats over it. Nothing but the picture is on screen while you play.
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -16,25 +15,26 @@ public sealed class MainForm : Form
     private readonly CaptureEngine _engine;
 
     private readonly VideoSurface _video = new();
-    private readonly SettingsPanel _panel;
-    private readonly BarForm _bar = new();
+    private readonly ControlPanel _panel;
     private readonly ScrimForm _scrim = new();
     private readonly VolumeOverlay _volumeOverlay = new();
     private readonly ToastOverlay _toast = new();
     private readonly StatsOverlay _stats = new();
     private readonly RecordOverlay _recordLight = new();
+    private readonly CaptureToast _captureToast = new();
+    private GlobalHotkeys? _globalHotkeys;
 
     private readonly System.Windows.Forms.Timer _cursorTimer = new() { Interval = 500 };
     private readonly System.Windows.Forms.Timer _relayout = new() { Interval = 160 };
     private readonly System.Windows.Forms.Timer _audioDebounce = new() { Interval = 300 };
     private readonly System.Windows.Forms.Timer _fade = new() { Interval = 15 };
+    /// <summary>Settings are written shortly after they change, not only on exit - a crash used to lose them all.</summary>
+    private readonly System.Windows.Forms.Timer _autosave = new() { Interval = 1500 };
+    /// <summary>Retries the card after it was unplugged or stopped sending, until it is back.</summary>
+    private readonly System.Windows.Forms.Timer _reconnect = new() { Interval = 2000 };
 
-    /// <summary>Bar + backdrop visible (independent of whether a settings window is open).</summary>
     private bool _menuOpen;
-    /// <summary>Which settings window is currently showing, or null when the menu is bar-only.</summary>
-    private Page? _openPage;
-    private double _chromeOpacity, _chromeTarget;
-    private double _panelOpacity, _panelTarget;
+    private double _opacity, _opacityTarget;
     private int _builtWidth;
 
     private DateTime _lastMouseMove = DateTime.UtcNow;
@@ -46,6 +46,7 @@ public sealed class MainForm : Form
 
     private bool _loading = true;
     private bool _shown;
+    private bool _reconnecting;
     private List<VideoFormat> _formats = new();
     /// <summary>Guards against a second save being started while one is still joining segments.</summary>
     private bool _replaySaving;
@@ -70,13 +71,13 @@ public sealed class MainForm : Form
         _settings = AppSettings.Load();
         _shortcuts = new ShortcutMap(_settings);
         _engine = new CaptureEngine(_settings.Adapter);
-        _panel = new SettingsPanel(_settings, _shortcuts);
+        _panel = new ControlPanel(_settings, _shortcuts);
 
         Text = "Ripsaw Studio";
         BackColor = Theme.Background;
         ForeColor = Theme.Text;
         Font = Theme.Body;
-        MinimumSize = new Size(760, 460);
+        MinimumSize = new Size(900, 600);
         ClientSize = new Size(_settings.WindowWidth, _settings.WindowHeight);
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
@@ -84,27 +85,22 @@ public sealed class MainForm : Form
         ApplyWindowIcon();
 
         _video.Dock = DockStyle.Fill;
-        _video.PlaceholderText = "Press Esc for settings";
+        _video.PlaceholderText = "Press Esc for the controls";
         Controls.Add(_video);
         Controls.Add(_volumeOverlay);
         Controls.Add(_toast);
         Controls.Add(_stats);
         Controls.Add(_recordLight);
+        Controls.Add(_captureToast);
 
-        // The bar, backdrop and settings window are separate borderless owned windows rather
-        // than child controls - see the note on BarForm - so they are never added to Controls.
+        // The backdrop and the panel are borderless owned windows rather than child controls,
+        // so they can fade with Form.Opacity over the swap chain.
         _panel.Owner = this;
-        _bar.Owner = this;
         _scrim.Owner = this;
-        _bar.PageSelected += (_, page) => ToggleWindow(page);
         _scrim.Clicked += (_, _) => SetMenuOpen(false);
-        _panel.PageShown += (_, page) => { _openPage = page; _bar.ActivePage = page; };
 
-        // Start already open if the menu was open on the last run - no fade on launch.
         _menuOpen = _settings.PanelOpen;
-        _chromeOpacity = _chromeTarget = _menuOpen ? 1 : 0;
-        if (_menuOpen) _openPage = Page.Capture;
-        _panelOpacity = _panelTarget = _openPage is null ? 0 : 1;
+        _opacity = _opacityTarget = _menuOpen ? 1 : 0;
 
         WirePanel();
         WireEngine();
@@ -112,44 +108,26 @@ public sealed class MainForm : Form
 
         _cursorTimer.Tick += CursorTick;
         _cursorTimer.Start();
-        // Laying the cards out again is not free, so it waits until a drag-resize settles.
+        // Laying the pages out again is not free, so it waits until a drag-resize settles.
         _relayout.Tick += (_, _) => { _relayout.Stop(); RebuildPanelIfNeeded(); };
         _audioDebounce.Tick += (_, _) => { _audioDebounce.Stop(); RestartAudio(); };
         _fade.Tick += FadeTick;
+        _autosave.Tick += (_, _) => { _autosave.Stop(); SaveSettings(); };
+        _reconnect.Tick += async (_, _) => await TryReconnect();
 
         LayoutOverlays();
         if (_menuOpen)
         {
             _scrim.Opacity = ScrimForm.MaxOpacity;
-            _bar.Opacity = 1;
+            _panel.Opacity = 1;
             _scrim.Show();
-            _bar.Show();
-            _bar.BringToFront();
-            if (_openPage is { } page)
-            {
-                // Show() has to run before ShowPage(): ShowPage can reload the recent-files
-                // list, which fetches shell thumbnails on a background thread and marshals
-                // each one back via BeginInvoke - that throws (silently, inside a try/catch)
-                // when the panel's window handle does not exist yet, which is exactly the
-                // panel's state before its first Show(). Calling Show() first means the
-                // handle - and RecentList's - already exists by the time ShowPage runs, so
-                // those thumbnails load instead of quietly failing.
-                _panel.Opacity = 1;
-                _panel.Show();
-                _panel.ShowPage(page);
-                _panel.BringToFront();
-                _bar.BringToFront();
-                _bar.ActivePage = page;
-                // See the matching call in SetOpenPage: whichever of these owned windows was
-                // just Shown for the first time needs an explicit Activate(), or Windows treats
-                // the user's next click as activation-only and eats it - the click handler never
-                // sees it, so it takes a second click to actually do anything.
-                _panel.Activate();
-            }
-            else
-            {
-                _bar.Activate();
-            }
+            // Show() has to run before ShowPage(): ShowPage can reload the captures list, which
+            // fetches thumbnails on a background thread and marshals each one back via
+            // BeginInvoke - that fails while the panel's window handle does not exist yet.
+            _panel.Show();
+            _panel.ShowPage(Page.Source);
+            _panel.BringToFront();
+            _panel.Activate();
         }
 
         _video.MouseMove += (_, _) => NoteMouseActivity();
@@ -158,9 +136,8 @@ public sealed class MainForm : Form
     }
 
     /// <summary>
-    /// Lets the bar, backdrop and settings window - each its own top-level window - forward
-    /// keystrokes back into the same shortcut table MainForm itself uses, so a hotkey works
-    /// no matter which of them last had focus.
+    /// Lets the panel and the backdrop - each its own top-level window - forward keystrokes
+    /// back into the same shortcut table MainForm itself uses.
     /// </summary>
     internal bool DispatchShortcut(Keys keyData)
     {
@@ -168,11 +145,6 @@ public sealed class MainForm : Form
         return _shortcuts.Lookup(keyData) is { } action && RunShortcut(action);
     }
 
-    /// <summary>
-    /// Uses the embedded appicon.ico for the title bar and Alt+Tab. Loading the .ico rather
-    /// than extracting from the exe keeps every size in it, so it stays sharp on high-DPI
-    /// taskbars. Silently does nothing when no icon has been added to the project.
-    /// </summary>
     private void ApplyWindowIcon()
     {
         try
@@ -188,8 +160,6 @@ public sealed class MainForm : Form
     private void WirePanel()
     {
         _panel.DeviceSelectionChanged += async (_, _) => await OnDeviceSelectionChanged();
-        // Rescan used to only re-read the video devices, which made a microphone or a
-        // capture endpoint plugged in after launch impossible to pick without a restart.
         _panel.RescanClicked += async (_, _) =>
         {
             await RefreshDevices();
@@ -197,7 +167,7 @@ public sealed class MainForm : Form
             RestartAudio();
             _toast.Show("Devices rescanned", false);
         };
-        _panel.StartStopClicked += async (_, _) => await ToggleStreaming();
+        _panel.StartStopClicked += async (_, _) => await ToggleStreaming(userAction: true);
         _panel.RecordClicked += async (_, _) => await ToggleRecording();
         _panel.SnapshotClicked += async (_, _) => await TakeSnapshot();
         // Nudging the buffer spinner would otherwise restart WASAPI on every click.
@@ -207,6 +177,7 @@ public sealed class MainForm : Form
         _panel.DiagnosticsClicked += async (_, _) => await SaveDiagnostics();
         _panel.AdapterChanged += async (_, _) => await SwitchAdapter();
         _panel.TraceClicked += async (_, _) => await RunTrace();
+        _panel.EncoderTestClicked += async (_, _) => await RunEncoderTest();
         _panel.ResetAllClicked += (_, _) =>
         {
             ApplyAllSettings();
@@ -230,19 +201,32 @@ public sealed class MainForm : Form
         _panel.ReplaySettingsChanged += (_, _) => ApplyReplaySettings();
         _panel.SaveReplayClicked += async (_, _) => await SaveReplay();
         _panel.ProfileChanged += async (_, _) => await ApplyProfile();
+        _panel.CloseClicked += (_, _) => SetMenuOpen(false);
+        _panel.OpenFolderClicked += (_, _) => OpenOutputFolder();
+        _panel.SettingsTouched += (_, _) => { _autosave.Stop(); _autosave.Start(); };
         _panel.ShortcutsChanged += (_, note) =>
         {
             _shortcuts.SaveInto(_settings);
             if (note.Length > 0) _toast.Show(note, false);
+            ApplyGlobalShortcuts();
         };
+        // Suspended while a key is being rebound, and taken back as soon as it is not.
+        KeyCaptureButton.CapturingChanged += OnKeyCaptureChanged;
     }
 
     private void WireEngine()
     {
-        _engine.Status += (_, message) => Ui(() => { _toast.Show(message, false); _panel.SetStatus(message); });
-        _engine.Failed += (_, message) => Ui(() => { _toast.Show(message, true); _panel.SetStatus(message); });
+        _engine.Status += (_, message) => Ui(() =>
+        {
+            // "Saved <path>" is what the engine raises when a recording, replay or screenshot
+            // lands, and each of those is announced by the thumbnail card instead.
+            if (!message.StartsWith("Saved ", StringComparison.Ordinal)) _toast.Show(message, false);
+        });
+        _engine.Failed += (_, message) => Ui(() => _toast.Show(message, true));
         _engine.Stats += (_, stats) => Ui(() => UpdateStats(stats));
         _engine.SourceFormatChanged += (_, _) => Ui(() => _video.ShowPlaceholder = false);
+        _engine.RecordingChanged += (_, e) => Ui(() => OnRecordingChanged(e));
+        _engine.StreamLost += (_, _) => Ui(OnStreamLost);
     }
 
     private void ApplyAllSettings()
@@ -255,6 +239,7 @@ public sealed class MainForm : Form
         _engine.Audio.Muted = _settings.Muted;
         _engine.Audio.MicVolume = _settings.MicVolume;
         _engine.Audio.MicMuted = _settings.MicMuted;
+        _engine.Audio.MicDucking = _settings.MicDucking;
         _engine.Audio.RestartIntervalMinutes = _settings.AudioRestartMinutes;
     }
 
@@ -264,14 +249,7 @@ public sealed class MainForm : Form
         _engine.ReplayEnabled = _settings.ReplayEnabled;
     }
 
-    private void ApplyRecordSettings()
-    {
-        _engine.RecordSettings.OutputFolder = _settings.RecordsFolder;
-        _engine.RecordSettings.VideoBitrateKbps = _settings.VideoBitrateKbps;
-        _engine.RecordSettings.AudioBitrateKbps = _settings.AudioBitrateKbps;
-        _engine.RecordSettings.AudioOffsetMs = _settings.AudioOffsetMs;
-        _engine.RecordSettings.UseHardwareEncoder = _settings.HardwareEncoder;
-    }
+    private void ApplyRecordSettings() => _engine.SetRecordSettings(_settings.ToRecordSettings());
 
     private void ApplyDisplaySettings()
     {
@@ -279,28 +257,22 @@ public sealed class MainForm : Form
         _engine.Scaling = _settings.Scaling;
         _engine.Aspect = _settings.Aspect;
         // Re-assigning TopMost - even to the same value - makes Windows reissue
-        // SetWindowPos(HWND_TOPMOST) for that window, which reorders the z-stack among
-        // topmost windows. Since this used to run on every settings change (not just when
-        // AlwaysOnTop itself changed), it silently shuffled the scrim above the panel,
-        // making the backdrop cover the menu and eat the next click as "clicked outside".
-        // Only touch TopMost - and only restore the stacking order - when the value
-        // genuinely changes. Guard on _bar.TopMost, the thing this block actually syncs -
-        // not on this form's own TopMost, which the constructor already set to the same
-        // value before the very first call here, which made that comparison a no-op and
-        // left _bar/_scrim/_panel never synced at all (invisible behind an always-on-top
-        // MainForm whenever AlwaysOnTop was true, which looked like the menu no longer
-        // opening).
-        if (_bar.TopMost != _settings.AlwaysOnTop)
+        // SetWindowPos(HWND_TOPMOST), which reorders the topmost windows and can put the
+        // backdrop above the panel. So it is only touched when the value really changes.
+        if (_panel.TopMost != _settings.AlwaysOnTop)
         {
             TopMost = _settings.AlwaysOnTop;
-            _bar.TopMost = _scrim.TopMost = _panel.TopMost = _settings.AlwaysOnTop;
-            // Restore the stacking order TopMost reassignment just disturbed: scrim at the
-            // back, panel above it, bar above the panel - same order SetOpenPage establishes.
+            _scrim.TopMost = _panel.TopMost = _settings.AlwaysOnTop;
             _panel.BringToFront();
-            _bar.BringToFront();
         }
         _stats.SetVisible(_settings.ShowStatusOverlay);
         LayoutOverlays();
+    }
+
+    private void SaveSettings()
+    {
+        _shortcuts.SaveInto(_settings);
+        _settings.Save();
     }
 
     // ---- lifecycle ------------------------------------------------------------------------
@@ -312,43 +284,48 @@ public sealed class MainForm : Form
         _shown = true;
         LayoutOverlays();
         _engine.SetWindow(_video.Handle, _video.ClientSize.Width, _video.ClientSize.Height);
-        // WinForms recreates handles for some property changes. Subscribing after the first
-        // attach means every later event is a recreation, and the swap chain must follow it
-        // rather than keep presenting into a destroyed window.
+        // WinForms recreates handles for some property changes; the swap chain must follow.
         _video.HandleCreated += (_, _) =>
             _engine.SetWindow(_video.Handle, _video.ClientSize.Width, _video.ClientSize.Height);
 
         try { _panel.SetAdapters(await _engine.ListAdaptersAsync(), _settings.Adapter); }
-        catch (Exception ex) { _toast.Show("Could not list graphics adapters: " + ex.Message, true); }
+        catch (Exception ex) { _toast.Show("Could not list graphics cards: " + ex.Message, true); }
+        await RefreshEncoders();
 
         await RefreshDevices();
         RefreshAudioDevices();
         _loading = false;
+        // Deferred to here rather than the constructor: RegisterHotKey needs a real window.
+        ApplyGlobalShortcuts();
         _ = CheckForUpdates();
 
         if (_settings.AutoStart && _panel.SelectedDevice is { SymbolicLink.Length: > 0 } && _panel.SelectedFormat is not null)
-            await ToggleStreaming();
+            await ToggleStreaming(userAction: false);
         else
             RestartAudio();
     }
 
+    private async Task RefreshEncoders()
+    {
+        try { _panel.SetEncoders(await _engine.ListEncodersAsync(), await _engine.PreviewAdapterAsync()); }
+        catch (Exception ex) { _toast.Show("Could not list encoders: " + ex.Message, true); }
+    }
+
     /// <summary>
-    /// Asks GitHub for the newest release, tells the About page what it found and, when
-    /// the running build is older, offers to open the download page. Never throws.
+    /// Asks GitHub for the newest release and tells the General page what it found. A newer
+    /// version gets one toast, once per version - not a dialog in the way of every launch.
     /// </summary>
     private async Task CheckForUpdates()
     {
         var result = await UpdateChecker.CheckAsync();
         if (IsDisposed) return;
-
         _panel.ShowUpdateStatus(result);
-        if (!result.UpdateAvailable) return;
-
-        var choice = MessageBox.Show(this,
-            $"Ripsaw Studio {UpdateChecker.Format(result.Latest)} is available (you have {UpdateChecker.Format(UpdateChecker.Current)}).{Environment.NewLine}{Environment.NewLine}Open the download page?",
-            "Update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-        if (choice == DialogResult.Yes)
-            UpdateChecker.OpenReleasesPage();
+        if (!result.UpdateAvailable || result.Latest is null) return;
+        string latest = UpdateChecker.Format(result.Latest);
+        if (_settings.NotifiedUpdate == latest) return;
+        _settings.NotifiedUpdate = latest;
+        _autosave.Start();
+        _toast.Show($"Ripsaw Studio {latest} is available. Download it from About.", false);
     }
 
     protected override void OnResize(EventArgs e)
@@ -359,12 +336,18 @@ public sealed class MainForm : Form
         _engine.Resize(_video.ClientSize.Width, _video.ClientSize.Height);
     }
 
+    protected override void OnMove(EventArgs e)
+    {
+        base.OnMove(e);
+        if (IsHandleCreated) LayoutOverlays();
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
         if (e.Cancel) return;
 
-        if (!_fullscreen)
+        if (!_fullscreen && WindowState == FormWindowState.Normal)
         {
             _settings.WindowWidth = ClientSize.Width;
             _settings.WindowHeight = ClientSize.Height;
@@ -372,17 +355,19 @@ public sealed class MainForm : Form
         _settings.PanelOpen = _menuOpen;
         _settings.Muted = _engine.Audio.Muted;
         _settings.MicMuted = _engine.Audio.MicMuted;
-        _shortcuts.SaveInto(_settings);
-        _settings.Save();
+        SaveSettings();
+        // Released before anything else: these are OS-wide registrations.
+        KeyCaptureButton.CapturingChanged -= OnKeyCaptureChanged;
+        _globalHotkeys?.Dispose();
+        _globalHotkeys = null;
         _engine.Dispose();
 
-        foreach (var timer in new[] { _cursorTimer, _relayout, _audioDebounce, _fade })
+        foreach (var timer in new[] { _cursorTimer, _relayout, _audioDebounce, _fade, _autosave, _reconnect })
         {
             timer.Stop();
             timer.Dispose();
         }
         _panel.Dispose();
-        _bar.Dispose();
         _scrim.Dispose();
     }
 
@@ -394,40 +379,32 @@ public sealed class MainForm : Form
         catch (InvalidOperationException) { /* handle went away between the check and the call */ }
     }
 
-    // ---- menu + overlay placement -------------------------------------------------------
+    // ---- panel + overlay placement -------------------------------------------------------
 
     /// <summary>
-    /// Positions the bar (top-left inset over the picture), the backdrop (covering the
-    /// picture exactly) and the settings window (centred), all as screen coordinates since
-    /// each is its own top-level window rather than a child control. The settings window is
-    /// rebuilt only when its width actually changes, because relaying out the cards is not free.
+    /// Centres the panel over the picture and stretches the backdrop across it, in screen
+    /// coordinates since both are top-level windows. The pages are rebuilt only when the
+    /// panel's width actually changes, because laying them out is not free.
     /// </summary>
     private void LayoutOverlays()
     {
         int w = ClientSize.Width, h = ClientSize.Height;
+        _scrim.Bounds = RectangleToScreen(ClientRectangle);
 
-        var scrimBounds = RectangleToScreen(ClientRectangle);
-        _scrim.Bounds = scrimBounds;
-
-        const int Inset = 16;
-        const int PanelGap = 16;
-        var barTopLeft = PointToScreen(new Point(Inset, Inset));
-        _bar.Location = barTopLeft;
-        _bar.Size = BarForm.DesiredSize;
-
-        int panelWidth = Math.Clamp(w - 72, 720, 1180);
-        int panelHeight = Math.Clamp(h - 72, 420, 940);
-        var panelTopLeft = PointToScreen(new Point(Inset, Inset + BarForm.DesiredSize.Height + PanelGap));
-        _panel.Bounds = new Rectangle(panelTopLeft, new Size(panelWidth, panelHeight));
+        int panelWidth = Math.Clamp(w - 80, 820, 1160);
+        int panelHeight = Math.Clamp(h - 80, 520, 860);
+        var topLeft = PointToScreen(new Point(Math.Max(0, (w - panelWidth) / 2), Math.Max(0, (h - panelHeight) / 2)));
+        _panel.Bounds = new Rectangle(topLeft, new Size(panelWidth, panelHeight));
         if (_builtWidth == 0) RebuildPanelIfNeeded();
         else if (_builtWidth != panelWidth) { _relayout.Stop(); _relayout.Start(); }
 
+        _captureToast.SetAnchor(new Point(16, 16));
         _volumeOverlay.Location = new Point((w - _volumeOverlay.Width) / 2, h - _volumeOverlay.Height - 28);
-        _toast.SetBounds(16, h - _toast.Height - 16, Math.Clamp(w - 32, 160, 560), _toast.Height);
+        _toast.SetBounds(16, h - _toast.Height - 16, Math.Clamp(w - 32, 160, 620), _toast.Height);
         _stats.Location = new Point(w - _stats.Width - 16, 16);
         _recordLight.Location = new Point(w - _recordLight.Width - 16, _settings.ShowStatusOverlay ? 16 + _stats.Height + 8 : 16);
 
-        foreach (Control overlay in new Control[] { _volumeOverlay, _toast, _stats, _recordLight })
+        foreach (Control overlay in new Control[] { _volumeOverlay, _toast, _stats, _recordLight, _captureToast })
             if (overlay.Visible) overlay.BringToFront();
     }
 
@@ -438,121 +415,52 @@ public sealed class MainForm : Form
         _panel.Build();
     }
 
-    /// <summary>Opens or closes the whole menu (backdrop + bar); closing also closes
-    /// whichever settings window was open.</summary>
-    private void SetMenuOpen(bool open)
+    private void SetMenuOpen(bool open, Page? page = null)
     {
-        if (_menuOpen == open) return;
+        if (_menuOpen == open)
+        {
+            if (open && page is { } p) _panel.ShowPage(p);
+            return;
+        }
         _menuOpen = open;
 
         if (open)
         {
             LayoutOverlays();
             if (!_scrim.Visible) { _scrim.Opacity = 0; _scrim.Show(); }
-            if (!_bar.Visible) { _bar.Opacity = 0; _bar.Show(); }
-            _bar.BringToFront();
-            // Show() alone doesn't reliably hand this owned window real OS focus - without this,
-            // the user's next click on a bar icon lands as an activate-only click that Windows
-            // eats before it ever reaches OnMouseDown, so the icon needs a second click to
-            // actually fire PageSelected. Cheap (one Win32 call) and only runs on the open
-            // transition, so it costs nothing while the menu sits closed.
-            _bar.Activate();
+            if (!_panel.Visible) { _panel.Opacity = 0; _panel.Show(); }
+            _panel.ShowPage(page ?? _panel.CurrentPage);
+            _panel.BringToFront();
+            // Show() alone doesn't reliably hand an owned window focus; without this the
+            // first click on the panel is eaten as an activation click.
+            _panel.Activate();
             ShowCursorIfHidden();
         }
-        else
-        {
-            SetOpenPage(null);
-        }
-        _chromeTarget = open ? 1 : 0;
+        _opacityTarget = open ? 1 : 0;
         _fade.Start();
+        _autosave.Start();
     }
 
-    /// <summary>Clicking a bar icon: opens its window, or closes it if it was already the
-    /// one showing. The bar and backdrop stay put either way.</summary>
-    private void ToggleWindow(Page page)
-    {
-        if (!_menuOpen) SetMenuOpen(true);
-        SetOpenPage(_openPage == page ? null : page);
-    }
-
-    private void SetOpenPage(Page? page)
-    {
-        // ShowPage below fires PageShown synchronously, and MainForm's own handler for that
-        // event updates _openPage as a side effect - so it must be read here, before that
-        // call, or this always sees the page we're about to open instead of the one we're
-        // replacing, and the panel's first Show() below never runs.
-        bool wasClosed = _openPage is null;
-        if (page is { } shown)
-        {
-            // Show() has to run before ShowPage(): see the matching comment in the
-            // constructor's startup block - ShowPage can reload the recent-files list, which
-            // fetches shell thumbnails on a background thread and marshals each one back via
-            // BeginInvoke, and that silently fails while the panel's window handle does not
-            // exist yet, which is exactly its state before this first Show().
-            if (wasClosed)
-            {
-                LayoutOverlays();
-                if (!_panel.Visible) { _panel.Opacity = 0; _panel.Show(); }
-                _panel.BringToFront();
-                _bar.BringToFront();
-            }
-            _panel.ShowPage(shown);
-            if (wasClosed)
-            {
-                // Same reasoning as SetMenuOpen's _bar.Activate(): the panel is a freshly shown
-                // owned window too, so its first click needs this or it's swallowed as an
-                // activation click instead of reaching whatever control the user meant to hit.
-                _panel.Activate();
-            }
-            _panelTarget = 1;
-        }
-        else
-        {
-            _panelTarget = 0;
-        }
-        _openPage = page;
-        _bar.ActivePage = page;
-        _fade.Start();
-    }
-
-    /// <summary>
-    /// Fades the backdrop, bar and settings window toward their targets and stops itself
-    /// once everything has settled, hiding whichever top-level windows reached zero so a
-    /// closed menu costs nothing. Each is its own window (see BarForm), so this drives plain
-    /// Form.Opacity rather than repainting anything.
-    /// </summary>
+    /// <summary>Fades the backdrop and the panel together, hiding both once fully out.</summary>
     private void FadeTick(object? sender, EventArgs e)
     {
-        bool moving = false;
-        _chromeOpacity = Ease(_chromeOpacity, _chromeTarget, ref moving);
-        _panelOpacity = Ease(_panelOpacity, _panelTarget, ref moving);
+        double next = _opacity + (_opacityTarget - _opacity) * 0.35;
+        bool settled = Math.Abs(_opacityTarget - next) < 0.01;
+        _opacity = settled ? _opacityTarget : next;
 
-        _scrim.Opacity = _chromeOpacity * ScrimForm.MaxOpacity;
-        _bar.Opacity = Math.Max(_chromeOpacity, 0.001);
-        _panel.Opacity = Math.Max(_panelOpacity, 0.001);
+        _scrim.Opacity = _opacity * ScrimForm.MaxOpacity;
+        _panel.Opacity = Math.Max(_opacity, 0.001);
+        if (!settled) return;
 
-        if (moving) return;
         _fade.Stop();
-        bool closingChrome = _chromeOpacity <= 0;
-        bool closingPanel = _panelOpacity <= 0;
-        // Whichever of these is about to close likely still holds Windows' input focus (it
-        // was the one that received the Escape keystroke, e.g. after clicking into an open
-        // settings panel). Reclaiming focus *before* hiding it - rather than after - means it
-        // has already let go of focus by the time Hide() runs, so Windows never has to guess
-        // which top-level window to hand focus to next. Left in the other order, that guess
-        // can land on a completely different app, which is what shows up as an alt-tab-like
-        // flash even though we fix it a moment later.
-        if (closingChrome || closingPanel) Activate();
-        if (closingChrome) { _scrim.Hide(); _bar.Hide(); }
-        if (closingPanel) _panel.Hide();
-    }
-
-    private static double Ease(double current, double target, ref bool moving)
-    {
-        double next = current + (target - current) * 0.32;
-        if (Math.Abs(target - next) < 0.01) next = target;
-        else moving = true;
-        return next;
+        if (_opacity <= 0)
+        {
+            // Take focus back before hiding, so Windows never has to guess where it goes -
+            // a guess that can land on another app entirely.
+            Activate();
+            _scrim.Hide();
+            _panel.Hide();
+        }
     }
 
     // ---- devices --------------------------------------------------------------------------
@@ -561,7 +469,7 @@ public sealed class MainForm : Form
     {
         List<VideoDeviceInfo> devices;
         try { devices = await _engine.EnumerateDevicesAsync(); }
-        catch (Exception ex) { _toast.Show("Could not list capture devices: " + ex.Message, true); return; }
+        catch (Exception ex) { _toast.Show("Could not list capture cards: " + ex.Message, true); return; }
 
         VideoDeviceInfo? preferred =
             devices.FirstOrDefault(d => d.SymbolicLink == _settings.VideoDeviceLink) ??
@@ -572,7 +480,7 @@ public sealed class MainForm : Form
         _panel.SetDevices(devices, preferred);
         if (devices.Count == 0)
         {
-            _toast.Show("No capture device found. Check the cable, and that nothing else has the card open.", true);
+            _toast.Show("No capture card found. Check the cable, and that no other app has the card open.", true);
             _panel.SetFormats(Array.Empty<VideoFormat>(), -1);
             return;
         }
@@ -594,7 +502,6 @@ public sealed class MainForm : Form
         {
             _settings.VideoDeviceName = device.Name;
             _settings.VideoDeviceLink = device.SymbolicLink;
-            _panel.SetStatus("Reading the formats " + device.Name + " supports...");
             try
             {
                 _formats = await _engine.QueryFormatsAsync(device);
@@ -606,27 +513,24 @@ public sealed class MainForm : Form
             }
 
             SelectFormatFromSettings();
-            _panel.SetStatus($"{device.Name} - {_formats.Count} formats");
             if (!_loading && AudioAutoPick(device.Name)) RestartAudio();
         }
 
         if (_panel.SelectedFormat is not { } format) return;
         _settings.FormatKey = format.Key;
+        _autosave.Start();
 
-        // Picking a different format mid-preview used to be silently ignored until the next
-        // manual stop and start, which looked like the dropdown doing nothing.
+        // Picking a different format mid-preview restarts the preview on it.
         if (_engine.IsStreaming && _activeFormatKey != format.Key)
         {
             await StopStreaming();
-            await ToggleStreaming();
+            await ToggleStreaming(userAction: false);
         }
     }
 
     /// <summary>
     /// Picks the format the settings ask for out of the list already read from the card,
-    /// falling back to the best guess when that format is not on offer. Separate from
-    /// reading the list, because a profile switch on the same card needs the second without
-    /// the first - reopening the device to re-read formats would stop the preview.
+    /// falling back to the best guess when that format is not on offer.
     /// </summary>
     private void SelectFormatFromSettings()
     {
@@ -661,15 +565,20 @@ public sealed class MainForm : Form
         return best;
     }
 
-    private async Task ToggleStreaming()
+    private async Task ToggleStreaming(bool userAction)
     {
-        if (_engine.IsStreaming) { await StopStreaming(); return; }
+        if (_engine.IsStreaming)
+        {
+            await StopStreaming();
+            return;
+        }
+        if (userAction) _reconnect.Stop();
 
         var device = _panel.SelectedDevice;
         var format = _panel.SelectedFormat;
         if (device is null || device.SymbolicLink.Length == 0 || format is null)
         {
-            _toast.Show("Pick a capture card and a format first.", true);
+            _toast.Show("Choose a capture card and a format first.", true);
             return;
         }
 
@@ -690,15 +599,58 @@ public sealed class MainForm : Form
 
     private async Task StopStreaming()
     {
+        _reconnect.Stop();
         _activeFormatKey = null;
         await _engine.StopAsync();
         _engine.Audio.Stop();
+        ShowStopped();
+    }
+
+    private void ShowStopped()
+    {
         _panel.SetStreaming(false);
         _panel.SetRecording(false);
         _recordLight.Stop();
         _video.ShowPlaceholder = true;
         _video.Invalidate();
-        _panel.SetStatus("Stopped");
+    }
+
+    /// <summary>The card went away by itself - unplugged, or claimed by another app.</summary>
+    private void OnStreamLost()
+    {
+        _activeFormatKey = null;
+        ShowStopped();
+        _video.PlaceholderText = "Waiting for the capture card...";
+        _reconnect.Start();
+    }
+
+    /// <summary>
+    /// Every couple of seconds after the card is lost: once the same card shows up again,
+    /// the preview starts back up on its own, the way plugging a cable back in should work.
+    /// </summary>
+    private async Task TryReconnect()
+    {
+        if (_engine.IsStreaming) { _reconnect.Stop(); return; }
+        if (_reconnecting) return;
+        _reconnecting = true;
+        try
+        {
+            var devices = await _engine.EnumerateDevicesAsync();
+            var match = devices.FirstOrDefault(d => d.SymbolicLink == _settings.VideoDeviceLink);
+            if (match is null) return;
+            _panel.SetDevices(devices, match);
+            _formats = await _engine.QueryFormatsAsync(match);
+            SelectFormatFromSettings();
+            await ToggleStreaming(userAction: false);
+            if (_engine.IsStreaming)
+            {
+                _reconnect.Stop();
+                _video.PlaceholderText = "Press Esc for the controls";
+                _toast.Show(match.Name + " is back", false);
+            }
+        }
+        catch { /* not back yet - try again on the next tick */ }
+        finally { _reconnecting = false; }
     }
 
     // ---- audio -----------------------------------------------------------------------------
@@ -725,11 +677,7 @@ public sealed class MainForm : Form
         _panel.SelectAudioOutputIfNone();
     }
 
-    /// <summary>
-    /// Matches the card's own audio endpoint to the selected card by name. The candidate list
-    /// is passed in where the caller already has one - enumerating endpoints opens every
-    /// device in turn, and doing it three times for one refresh was pure waste.
-    /// </summary>
+    /// <summary>Matches the card's own audio endpoint to the selected card by name.</summary>
     private bool AudioAutoPick(string videoDeviceName, List<AudioDeviceInfo>? candidates = null)
     {
         var current = _panel.SelectedAudioIn;
@@ -764,8 +712,7 @@ public sealed class MainForm : Form
             _toast.Show("Audio: " + ex.Message, true);
         }
 
-        // The replay buffer takes its stream layout from its first segment, so it is armed
-        // once there is a sound format to put in it - otherwise a saved clip would be silent.
+        // The replay buffer is armed once there is a sound format to put in it.
         _engine.RefreshReplay();
     }
 
@@ -777,15 +724,17 @@ public sealed class MainForm : Form
         _settings.MicMuted = !_settings.MicMuted;
         _engine.Audio.MicMuted = _settings.MicMuted;
         _panel.ReloadFromSettings();
+        _autosave.Start();
         _toast.Show(_settings.MicEnabled
             ? _settings.MicMuted ? "Microphone muted" : "Microphone live"
-            : "No microphone is being mixed in - turn it on under Record.", !_settings.MicEnabled);
+            : "No microphone is mixed in. Turn it on under Audio.", !_settings.MicEnabled);
     }
 
     private void ToggleMute()
     {
         _engine.Audio.Muted = !_engine.Audio.Muted;
         _settings.Muted = _engine.Audio.Muted;
+        _autosave.Start();
         _volumeOverlay.Show(_settings.Volume, _engine.Audio.Muted);
     }
 
@@ -794,6 +743,7 @@ public sealed class MainForm : Form
         _settings.Volume = Math.Clamp(_settings.Volume + delta, 0f, 2f);
         _engine.Audio.Volume = _settings.Volume;
         _panel.SetVolumeSilently(_settings.Volume);
+        _autosave.Start();
         _volumeOverlay.Show(_settings.Volume, _engine.Audio.Muted);
     }
 
@@ -801,7 +751,7 @@ public sealed class MainForm : Form
     {
         _engine.FlushPipeline();
         RestartAudio();
-        _toast.Show("Pipeline flushed and audio restarted", false);
+        _toast.Show("Video flushed and audio restarted", false);
     }
 
     // ---- record / snapshot -------------------------------------------------------------------
@@ -812,9 +762,11 @@ public sealed class MainForm : Form
         {
             if (_engine.IsRecording)
             {
-                await _engine.StopRecordingAsync();
                 _panel.SetRecording(false);
                 _recordLight.Stop();
+                string? saved = await _engine.StopRecordingAsync();
+                _panel.RefreshRecent();
+                if (saved is not null) ShowCapture(saved, RecentKind.Recording);
                 return;
             }
             string name = $"Capture_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4";
@@ -830,23 +782,29 @@ public sealed class MainForm : Form
         }
     }
 
-    /// <summary>
-    /// Writes the tail of the replay buffer out. The join runs off the capture thread, so
-    /// this can take a second or two on a long window - the button says so while it does.
-    /// </summary>
+    /// <summary>The engine moved a recording on to a new file, or ended it, without being asked.</summary>
+    private void OnRecordingChanged(RecordingChangedEventArgs e)
+    {
+        if (e.Message is { } message) _toast.Show(message, e.IsError);
+        if (e.Recording) return;
+        _panel.SetRecording(false);
+        _recordLight.Stop();
+        _panel.RefreshRecent();
+    }
+
+    /// <summary>Writes the tail of the replay buffer out. The join runs off the capture thread.</summary>
     private async Task SaveReplay()
     {
         if (_replaySaving) return;
         _replaySaving = true;
-        _panel.SetReplaySaving(true);
+        _panel.SetReplayState(_engine.IsReplayArmed, saving: true);
         try
         {
             string name = $"Replay_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp4";
-            _toast.Show($"Saving the last {_settings.ReplaySaveSeconds} seconds...", false);
             string path = await _engine.SaveReplayAsync(_settings.ReplaySaveSeconds,
                                                         Path.Combine(_settings.ReplayFolder, name));
-            _toast.Show("Saved " + Path.GetFileName(path), false);
             _panel.RefreshRecent();
+            ShowCapture(path, RecentKind.Replay);
         }
         catch (Exception ex)
         {
@@ -855,7 +813,7 @@ public sealed class MainForm : Form
         finally
         {
             _replaySaving = false;
-            _panel.SetReplaySaving(false);
+            _panel.SetReplayState(_engine.IsReplayArmed, saving: false);
         }
     }
 
@@ -864,15 +822,15 @@ public sealed class MainForm : Form
         _settings.ReplayEnabled = !_settings.ReplayEnabled;
         ApplyReplaySettings();
         _panel.ReloadFromSettings();
+        _autosave.Start();
         _toast.Show(_settings.ReplayEnabled
-            ? $"Instant replay armed - keeping the last {_settings.ReplayBufferSeconds} s"
+            ? $"Instant replay on, keeping the last {_settings.ReplayBufferSeconds} s"
             : "Instant replay off", false);
     }
 
     /// <summary>
-    /// Opens the Records folder, or - in the common case where Records, Replay and
-    /// Screenshots are still the three stock subfolders of one RipsawStudio folder - that
-    /// shared parent instead, so all three show up in the same Explorer window.
+    /// Opens the Recordings folder, or - when Recordings, Replay and Screenshots are still the
+    /// three stock subfolders of one RipsawStudio folder - that shared parent instead.
     /// </summary>
     private void OpenOutputFolder()
     {
@@ -911,16 +869,14 @@ public sealed class MainForm : Form
         _settings.SwitchProfile(next.Name);
         _panel.ReloadFromSettings();
         await ApplyProfile();
+        _autosave.Start();
         _toast.Show("Profile: " + next.Name, false);
     }
 
     /// <summary>
-    /// Puts a freshly loaded profile into effect.
-    ///
-    /// On the same card the format list is kept and the profile's format is just picked out
-    /// of it: re-reading the list means reopening the device, which stops the preview. On a
-    /// different card the list has to be read again, the preview does stop, and it is
-    /// started back up at the end if it had been running.
+    /// Puts a freshly loaded profile into effect. On the same card the format list is kept and
+    /// the profile's format is just picked out of it; on a different card the list is read
+    /// again, and the preview is started back up at the end if it had been running.
     /// </summary>
     private async Task ApplyProfile()
     {
@@ -940,18 +896,20 @@ public sealed class MainForm : Form
         _loading = wasLoading;
 
         RestartAudio();
-        if (wasStreaming && !_engine.IsStreaming) await ToggleStreaming();
+        if (wasStreaming && !_engine.IsStreaming) await ToggleStreaming(userAction: false);
     }
 
     private async Task TakeSnapshot()
     {
         try
         {
-            string name = $"Shot_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.png";
-            await _engine.ScreenshotAsync(Path.Combine(_settings.ScreenshotsFolder, name));
+            // Milliseconds in the name: two snapshots in the same second used to overwrite each other.
+            string name = $"Shot_{DateTime.Now:yyyy-MM-dd_HH-mm-ss-fff}.png";
+            string path = await _engine.ScreenshotAsync(Path.Combine(_settings.ScreenshotsFolder, name));
             _panel.RefreshRecent();
+            ShowCapture(path, RecentKind.Screenshot);
         }
-        catch (Exception ex) { _toast.Show("Snapshot: " + ex.Message, true); }
+        catch (Exception ex) { _toast.Show("Screenshot: " + ex.Message, true); }
     }
 
     private async Task SwitchAdapter()
@@ -960,10 +918,11 @@ public sealed class MainForm : Form
         {
             await _engine.SwitchAdapterAsync(_settings.Adapter);
             RestartAudio();
+            await RefreshEncoders();
         }
         catch (Exception ex)
         {
-            _toast.Show("Could not switch GPU: " + ex.Message, true);
+            _toast.Show("Could not switch graphics card: " + ex.Message, true);
         }
     }
 
@@ -971,7 +930,7 @@ public sealed class MainForm : Form
     {
         try
         {
-            _toast.Show("Measuring for 10 seconds - leave it running and play normally...", false);
+            _toast.Show("Measuring for 10 seconds, keep playing normally...", false);
             string report = await _engine.RunTraceAsync(10);
             string path = Path.Combine(Path.GetDirectoryName(AppSettings.SettingsPath)!, "trace.txt");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -981,7 +940,28 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _toast.Show("Trace failed: " + ex.Message, true);
+            _toast.Show("Measuring failed: " + ex.Message, true);
+        }
+    }
+
+    private async Task RunEncoderTest()
+    {
+        if (_engine.IsRecording)
+        {
+            _toast.Show("Stop the recording before testing encoders.", true);
+            return;
+        }
+        try
+        {
+            _toast.Show("Testing encoders, this takes about half a minute...", false);
+            string folder = Path.Combine(Path.GetTempPath(), "RipsawStudio", "encoder-test");
+            string report = await Task.Run(() => EncoderSelfTest.Run(folder));
+            _toast.Show("Encoder test finished", false);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(report) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _toast.Show("Encoder test failed: " + ex.Message, true);
         }
     }
 
@@ -989,14 +969,14 @@ public sealed class MainForm : Form
     {
         try
         {
-            _toast.Show("Collecting diagnostics...", false);
+            _toast.Show("Collecting a report...", false);
             string path = await Diagnostics.WriteAsync(_engine, _settings);
             _toast.Show("Saved " + path, false);
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            _toast.Show("Diagnostics failed: " + ex.Message, true);
+            _toast.Show("Report failed: " + ex.Message, true);
         }
     }
 
@@ -1004,23 +984,40 @@ public sealed class MainForm : Form
     {
         _panel.SetLevel(stats.AudioPeak);
         _panel.SetMicLevel(_engine.Audio.MicPeakLevel);
-        if (_engine.IsRecording) _recordLight.Update(stats.RecordingElapsed);
 
+        bool streaming = _engine.IsStreaming;
+        bool recording = _engine.IsRecording;
+        if (recording) _recordLight.Update(stats.RecordingElapsed);
+        _panel.SetRecording(recording, stats.RecordingElapsed);
+
+        var state = !streaming ? SignalStrip.State.Stopped
+            : stats.SecondsSinceFrame > 1.5 ? SignalStrip.State.NoSignal
+            : SignalStrip.State.Live;
+        string detail = recording
+            ? $"{stats.RecordingEncoder}   {FormatBytes(stats.RecordingBytes)}" + (stats.FreeDiskBytes >= 0 ? $" written, {FormatBytes(stats.FreeDiskBytes)} free" : "")
+            : _engine.IsReplayArmed ? $"Replay ready: {stats.ReplayBufferedSeconds:0} s" : "";
+        _panel.SetSignal(state,
+            stats.Width > 0 ? $"{stats.Width}×{stats.Height}" : "",
+            streaming ? $"{stats.PresentFps:0}" : "",
+            streaming && stats.PipelineMs > 0 ? $"{stats.PipelineMs:0.0}" : "",
+            detail);
+
+        _panel.SetReplayState(stats.ReplayArmed, _replaySaving);
         _panel.SetReplayState(stats.ReplayArmed
-            ? $"Armed - {stats.ReplayBufferedSeconds:0} s of {_settings.ReplayBufferSeconds} s ready\n" +
-              $"{ShortcutLabel(ShortcutAction.SaveReplay)} saves the last {_settings.ReplaySaveSeconds} s"
+            ? $"Ready: {stats.ReplayBufferedSeconds:0} of {_settings.ReplayBufferSeconds} s kept.\n" +
+              $"{ShortcutLabel(ShortcutAction.SaveReplay)} saves the last {_settings.ReplaySaveSeconds} s."
             : stats.ReplayError is { Length: > 0 } error
                 ? "Stopped: " + error
                 : _settings.ReplayEnabled
-                    ? "Waiting for the preview to start"
-                    : $"Off - {ShortcutLabel(ShortcutAction.ReplayToggle)} arms it");
+                    ? "Waiting for the preview to start."
+                    : $"Off. {ShortcutLabel(ShortcutAction.ReplayToggle)} turns it on.");
 
-        _panel.SetLiveStatus(_engine.IsStreaming,
-            _engine.IsStreaming ? $"{stats.PresentFps:0} FPS" : "Stopped",
-            stats.Width > 0 ? $"{stats.Width}x{stats.Height}" : "no signal");
-        _panel.SetRecordState(_engine.IsRecording
-            ? $"Recording {stats.RecordingElapsed:hh\\:mm\\:ss}\n{Path.GetFileName(_engine.RecordingPath)}"
-            : "Not recording");
+        _panel.SetLiveStatus(streaming, streaming
+            ? stats.Width > 0 ? $"On: {stats.Width}×{stats.Height}, {stats.CaptureFps:0} fps in, {stats.PresentFps:0} on screen" : "On"
+            : "Off");
+        _panel.SetRecordState(recording
+            ? $"Recording {Path.GetFileName(_engine.RecordingPath)} with {stats.RecordingEncoder}"
+            : $"Not recording. {ShortcutLabel(ShortcutAction.RecordToggle)} starts and stops a recording.");
 
         if (stats.Width == 0) return;
         string line1 = $"{stats.Width}x{stats.Height} {stats.Format}  " +
@@ -1034,6 +1031,13 @@ public sealed class MainForm : Form
         _panel.SetStatus(line1 + "\n" + line2 + "\n" +
                          $"vsync {(stats.VSyncOn ? "on" : "off")}   queued {stats.QueuedFrames}");
     }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        < 0 => "?",
+        >= 1L << 30 => $"{bytes / (double)(1L << 30):0.0} GB",
+        _ => $"{bytes / (double)(1L << 20):0} MB",
+    };
 
     // ---- fullscreen and keys ------------------------------------------------------------------
 
@@ -1085,12 +1089,29 @@ public sealed class MainForm : Form
         _cursorHidden = true;
     }
 
-    private string ShortcutLabel(ShortcutAction action) => _shortcuts.DescribeBoth(action);
+    /// <summary>Puts the thumbnail card on screen for something that was just written.</summary>
+    private void ShowCapture(string path, RecentKind kind) => _captureToast.Show(path, kind);
 
     /// <summary>
-    /// Every shortcut goes through the binding table rather than a fixed switch on keys, so
-    /// rebinding one in the panel takes effect at once and nothing has to be kept in step.
+    /// Registers or releases the system-wide capture keys to match the setting, and says which
+    /// chords Windows refused - usually because another overlay already holds them.
     /// </summary>
+    private void ApplyGlobalShortcuts(bool quiet = false)
+    {
+        _globalHotkeys ??= new GlobalHotkeys(this, action => Ui(() => RunShortcut(action)));
+
+        bool wanted = _settings.GlobalShortcuts && !KeyCaptureButton.AnyCapturing;
+        _globalHotkeys.Apply(wanted, _shortcuts);
+
+        if (quiet || !wanted || _globalHotkeys.Rejected.Count == 0) return;
+        _toast.Show("Another program already uses " + string.Join(", ", _globalHotkeys.Rejected) +
+                    ". Pick a different key for it.", true);
+    }
+
+    private void OnKeyCaptureChanged(object? sender, EventArgs e) => ApplyGlobalShortcuts(quiet: true);
+
+    private string ShortcutLabel(ShortcutAction action) => _shortcuts.DescribeBoth(action);
+
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         if (DispatchShortcut(keyData)) return true;
@@ -1100,9 +1121,7 @@ public sealed class MainForm : Form
     /// <summary>Runs an action, or returns false to let the keystroke go where it was going.</summary>
     private bool RunShortcut(ShortcutAction action)
     {
-        // A letter or an arrow key belongs to whatever is being typed in or nudged. The
-        // settings window is now its own top-level Form, so its focus has to be checked
-        // separately from MainForm's own ActiveControl - they no longer share one focus scope.
+        // A letter or an arrow key belongs to whatever is being typed in or nudged.
         switch (action)
         {
             case ShortcutAction.Mute:
@@ -1113,7 +1132,7 @@ public sealed class MainForm : Form
             case ShortcutAction.VolumeUp:
             case ShortcutAction.VolumeDown:
                 if (ActiveControl is Slider or NumericField or FlatCombo or TextBoxBase) return false;
-                if (_panel.ActiveControl is Slider or NumericField or FlatCombo or TextBoxBase) return false;
+                if (_panel.ActiveControl is Slider or NumericField or FlatCombo or TextBoxBase or Segmented) return false;
                 break;
         }
 

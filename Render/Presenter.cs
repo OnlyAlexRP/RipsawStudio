@@ -87,7 +87,7 @@ internal sealed class Presenter : IDisposable
     /// <summary>How frames are paced, so a trace can state it rather than implying it.</summary>
     public string PacingDescription => _frameLatencyWaitable != IntPtr.Zero
         ? $"waitable swap chain, {BufferCountForLatency} buffers, max frame latency {_maxFrameLatency}"
-        : $"NO waitable object - Present will block ({BufferCountForLatency} buffers)";
+        : $"NO waitable object, Present will block ({BufferCountForLatency} buffers)";
     public ScalingMode Scaling { get; set; } = ScalingMode.Fit;
     public AspectMode Aspect { get; set; } = AspectMode.Auto;
     /// <summary>Row stride for system-memory frames; negative means bottom-up. 0 = assume packed top-down.</summary>
@@ -378,6 +378,9 @@ internal sealed class Presenter : IDisposable
     [System.Runtime.InteropServices.DllImport("kernel32.dll", ExactSpelling = true)]
     private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", ExactSpelling = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
     private void UpdateQueueDepth()
     {
         try
@@ -594,7 +597,7 @@ internal sealed class Presenter : IDisposable
     private ID3D11VideoProcessorOutputView GetScratchVpView()
     {
         if (_scratchVpView is not null) return _scratchVpView;
-        _deblock!.GetSourceTarget(_backBufferWidth, _backBufferHeight, out var scratchTexture);
+        var scratchTexture = _deblock!.GetSourceTarget(_backBufferWidth, _backBufferHeight);
         _scratchVpView = _videoDevice.CreateVideoProcessorOutputView(scratchTexture, _vpEnum!,
             new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D });
         return _scratchVpView;
@@ -617,6 +620,13 @@ internal sealed class Presenter : IDisposable
         _backBuffer?.Dispose();
         _backBuffer = null;
     }
+
+    /// <summary>
+    /// Drops the cached views onto the capture card's surfaces. Each view holds its surface
+    /// alive, so after the preview stops they would keep a whole pool of frames in video
+    /// memory until the cache next filled up.
+    /// </summary>
+    public void ReleaseSurfaces() => ClearInputViews();
 
     private void ClearInputViews()
     {
@@ -730,7 +740,9 @@ internal sealed class Presenter : IDisposable
     private void DisposeSwapChain()
     {
         ReleaseBackBufferView();
-        // The waitable handle belongs to the swap chain; it goes away with it.
+        // GetFrameLatencyWaitableObject hands out a handle the caller must close itself;
+        // the swap chain does not take it with it.
+        if (_frameLatencyWaitable != IntPtr.Zero) CloseHandle(_frameLatencyWaitable);
         _frameLatencyWaitable = IntPtr.Zero;
         _swapChain2?.Dispose();
         _swapChain2 = null;

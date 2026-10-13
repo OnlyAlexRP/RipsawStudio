@@ -36,6 +36,37 @@ internal static class Program
             return;
         }
 
+        int inspectAt = Array.FindIndex(args, a => a.Equals("--inspect", StringComparison.OrdinalIgnoreCase));
+        if (inspectAt >= 0 && inspectAt + 1 < args.Length)
+        {
+            // Reads a recording back and writes what is in it next to it, for checking a file
+            // from a script without opening a player.
+            var thread = new Thread(() =>
+            {
+                Interop.MfHelpers.Startup();
+                string file = args[inspectAt + 1];
+                try { File.WriteAllText(file + ".txt", EncoderSelfTest.Inspect(file)); }
+                catch (Exception ex) { File.WriteAllText(file + ".txt", "FAILED: " + ex.Message); }
+                finally { Interop.MfHelpers.Shutdown(); }
+            });
+            thread.SetApartmentState(ApartmentState.MTA);
+            thread.Start();
+            thread.Join();
+            return;
+        }
+
+        int testAt = Array.FindIndex(args, a => a.Equals("--encoder-test", StringComparison.OrdinalIgnoreCase));
+        if (testAt >= 0)
+        {
+            string folder = testAt + 1 < args.Length
+                ? args[testAt + 1]
+                : Path.Combine(Path.GetTempPath(), "RipsawStudio", "encoder-test");
+            string report = EncoderSelfTest.Run(folder);
+            if (!args.Any(a => a.Equals("--quiet", StringComparison.OrdinalIgnoreCase)))
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(report) { UseShellExecute = true });
+            return;
+        }
+
         // A blocking gen2 collection is tens of milliseconds - visible as a dropped frame.
         System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
 

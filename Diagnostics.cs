@@ -51,13 +51,13 @@ public static class Diagnostics
             sb.AppendLine($"Audio format   {format.SampleRate} Hz, {format.Channels} ch, {format.BitsPerSample}-bit {format.Encoding}");
         sb.AppendLine($"Audio buffered {engine.Audio.BufferedMs:0} ms");
         sb.AppendLine($"Microphone     {(engine.Audio.Mic.Wanted ? engine.Audio.MicRunning ? "running" : "asked for, not running" : "off")}");
-        sb.AppendLine($"Replay buffer  {(engine.IsReplayArmed ? $"armed, {engine.ReplayBufferedSeconds:0} s buffered, " + (engine.ReplayHasAudio ? "with sound" : "NO SOUND BUFFERED - a clip saved now would be silent") : "not armed")}");
+        sb.AppendLine($"Replay buffer  {(engine.IsReplayArmed ? $"armed, {engine.ReplayBufferedSeconds:0} s buffered, " + (engine.ReplayHasAudio ? "with sound" : "NO SOUND BUFFERED, a clip saved now would be silent") : "not armed")}");
         sb.AppendLine($"Profile        {settings.ActiveProfile} (of {settings.Profiles.Count})");
         sb.AppendLine();
 
         await AppendVideoDevices(sb, engine);
         AppendAudioDevices(sb);
-        AppendSettings(sb, settings);
+        AppendSettings(sb);
         AppendCrashLog(sb);
         return sb.ToString();
     }
@@ -128,7 +128,7 @@ public static class Diagnostics
         sb.AppendLine();
     }
 
-    private static void AppendSettings(StringBuilder sb, AppSettings settings)
+    private static void AppendSettings(StringBuilder sb)
     {
         sb.AppendLine("Settings");
         sb.AppendLine("--------");
@@ -149,7 +149,7 @@ public static class Diagnostics
         string log = Path.Combine(Path.GetDirectoryName(AppSettings.SettingsPath)!, "crash.log");
         try
         {
-            if (!File.Exists(log)) { sb.AppendLine("(none - good)"); return; }
+            if (!File.Exists(log)) { sb.AppendLine("(none)"); return; }
             var lines = File.ReadAllLines(log);
             foreach (var line in lines.TakeLast(80)) sb.AppendLine(line);
         }

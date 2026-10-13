@@ -39,8 +39,8 @@ internal sealed class ReplayBuffer : IDisposable
     /// </summary>
     private int SegmentSeconds => EstimateSegmentSeconds(_bufferSeconds);
 
-    /// <summary>The <see cref="SegmentSeconds"/> a buffer of this length would use - exposed for the UI hint.</summary>
-    public static int EstimateSegmentSeconds(int bufferSeconds) => Math.Clamp(bufferSeconds / 6, 4, 12);
+    /// <summary>The <see cref="SegmentSeconds"/> a buffer of this length uses.</summary>
+    private static int EstimateSegmentSeconds(int bufferSeconds) => Math.Clamp(bufferSeconds / 6, 4, 12);
 
     private readonly object _writeLock = new();
     private readonly object _ringLock = new();
@@ -61,7 +61,7 @@ internal sealed class ReplayBuffer : IDisposable
 
     // Everything needed to build the next segment's writer, captured when the buffer starts.
     private RecordSettings? _settings;
-    private object? _deviceManager;
+    private EncoderPlan? _plan;
     private Guid _subtype;
     private int _width, _height;
     private uint _fpsNum = 60, _fpsDen = 1;
@@ -86,7 +86,7 @@ internal sealed class ReplayBuffer : IDisposable
             _bufferSeconds = value;
             // The sound ring is sized in bytes, so it has to be resized to match. Doing it
             // only on a real change keeps this off the path that runs twice a second.
-            _audio.Configure(_audioFormat, value);
+            _audio.Configure(_audioFormat, value, AudioSlackSeconds);
         }
     }
     /// <summary>Set when a segment could not be written, so the UI can say so once and stop.</summary>
@@ -139,7 +139,7 @@ internal sealed class ReplayBuffer : IDisposable
     /// the recorder would be given. Throws if the very first segment cannot be opened, since
     /// that is a real problem worth telling the user about rather than failing silently.
     /// </summary>
-    public void Start(RecordSettings settings, object? deviceManager, Guid subtype,
+    public void Start(RecordSettings settings, EncoderPlan plan, Guid subtype,
                       int width, int height, uint fpsNum, uint fpsDen, WaveFormat? audioFormat, long nowHns)
     {
         Stop();
@@ -148,14 +148,14 @@ internal sealed class ReplayBuffer : IDisposable
         DrainWorker();
 
         _settings = settings;
-        _deviceManager = deviceManager;
+        _plan = plan;
         _subtype = subtype;
         _width = width;
         _height = height;
         _fpsNum = fpsNum;
         _fpsDen = fpsDen;
         _audioFormat = audioFormat;
-        _audio.Configure(audioFormat, BufferSeconds);
+        _audio.Configure(audioFormat, BufferSeconds, AudioSlackSeconds);
         LastError = null;
 
         _folder = Path.Combine(Path.GetTempPath(), "RipsawStudio", "replay", Environment.ProcessId.ToString());
@@ -170,7 +170,7 @@ internal sealed class ReplayBuffer : IDisposable
             _openSeconds = 0;
         }
         _running = true;
-        Status?.Invoke(this, $"Instant replay armed - keeping the last {BufferSeconds} s");
+        Status?.Invoke(this, $"Instant replay armed, keeping the last {BufferSeconds} s");
     }
 
     public void Stop()
@@ -218,7 +218,7 @@ internal sealed class ReplayBuffer : IDisposable
             if (_current is null) return;
             _openSeconds = (nowHns - _segmentStartHns) / 10_000_000.0;
 
-            if (_openSeconds >= SegmentSeconds && _next is not null) RollOver(nowHns, waitForFinalise: false);
+            if (_openSeconds >= SegmentSeconds && _next is not null) RollOver(nowHns);
             else if (_openSeconds >= SegmentSeconds * 0.6) PrepareNext();
 
             try { _current?.WriteVideo(sample, nowHns, durationHns); }
@@ -240,7 +240,7 @@ internal sealed class ReplayBuffer : IDisposable
         if (!SameLayout(_audioFormat, format))
         {
             _audioFormat = format;
-            _audio.Configure(format, BufferSeconds);
+            _audio.Configure(format, BufferSeconds, AudioSlackSeconds);
         }
         _audio.Write(buffer, count, format, nowHns);
     }
@@ -255,8 +255,11 @@ internal sealed class ReplayBuffer : IDisposable
 
     /// <summary>
     /// Closes the open segment and writes the last <paramref name="seconds"/> out to
-    /// <paramref name="outputPath"/>. Called on the capture thread; only the rollover happens
-    /// there, and the joining runs on this class's own thread.
+    /// <paramref name="outputPath"/>. Called on the capture thread, and returns at once: the
+    /// open segment's finalise and the join are both queued on this class's own thread, in
+    /// that order, so the join sees the ring with the segment just closed already in it.
+    /// Nothing here waits for the worker - it may still be joining an earlier save, and
+    /// waiting on that used to freeze the preview for as long as the join took.
     /// </summary>
     public Task<string> SaveAsync(int seconds, string outputPath, long nowHns)
     {
@@ -264,45 +267,38 @@ internal sealed class ReplayBuffer : IDisposable
         if (!IsRunning)
         {
             completion.TrySetException(new InvalidOperationException(
-                "The replay buffer is not running. Arm it on the Record page first."));
+                "The replay buffer is not running. Turn it on under Recording > Instant replay first."));
             return completion.Task;
         }
 
-        // Drained before the lock is taken, never inside it. A worker job needs the write
-        // lock to tear a failed buffer down, and waiting for the worker while holding that
-        // lock is how the capture thread and the worker deadlock against each other.
-        // Draining first also puts any segment still finalising into the ring ahead of this
-        // one, which is what keeps the ring in order - a joined clip plays a mis-ordered
-        // ring back as a jump. Nothing else can roll over in between: only this thread does.
-        DrainWorker();
+        lock (_writeLock) RollOver(nowHns);
 
-        List<ReplaySegment> chosen;
-        lock (_writeLock) RollOver(nowHns, waitForFinalise: true);
-        lock (_ringLock)
-        {
-            long wanted = seconds * 10_000_000L;
-            long total = 0;
-            chosen = new List<ReplaySegment>();
-            for (int i = _segments.Count - 1; i >= 0 && total < wanted; i--)
-            {
-                chosen.Insert(0, _segments[i]);
-                total += _segments[i].DurationHns;
-            }
-            foreach (var segment in chosen) _inUse.Add(segment.Path);
-        }
-
-        if (chosen.Count == 0)
-        {
-            completion.TrySetException(new InvalidOperationException("Nothing has been buffered yet."));
-            return completion.Task;
-        }
-
-        long clipStartHns = chosen[0].StartHns;
         int audioOffsetMs = _settings?.AudioOffsetMs ?? 0;
         int audioBitrate = _settings?.AudioBitrateKbps ?? 192;
 
         bool queued = Enqueue(() =>
         {
+            List<ReplaySegment> chosen;
+            lock (_ringLock)
+            {
+                long wanted = seconds * 10_000_000L;
+                long total = 0;
+                chosen = new List<ReplaySegment>();
+                for (int i = _segments.Count - 1; i >= 0 && total < wanted; i--)
+                {
+                    chosen.Insert(0, _segments[i]);
+                    total += _segments[i].DurationHns;
+                }
+                foreach (var segment in chosen) _inUse.Add(segment.Path);
+            }
+
+            if (chosen.Count == 0)
+            {
+                completion.TrySetException(new InvalidOperationException("Nothing has been buffered yet."));
+                return;
+            }
+
+            long clipStartHns = chosen[0].StartHns;
             try
             {
                 // Taken here rather than on the capture thread: a minute of sound is about
@@ -322,12 +318,12 @@ internal sealed class ReplayBuffer : IDisposable
         // Nothing will ever run the job once the queue has closed, and an awaiter left on a
         // task that never completes is a save button stuck on "Saving..." for good.
         if (!queued)
-        {
-            ReleaseSegments(chosen);
             completion.TrySetException(new InvalidOperationException("The replay buffer is shutting down."));
-        }
         return completion.Task;
     }
+
+    /// <summary>Sound has to reach back as far as the oldest segment a save can pick.</summary>
+    private int AudioSlackSeconds => SegmentSeconds + 2;
 
     private void ReleaseSegments(List<ReplaySegment> segments)
     {
@@ -340,8 +336,11 @@ internal sealed class ReplayBuffer : IDisposable
 
     // ---- segment lifecycle -------------------------------------------------------------------
 
-    /// <summary>Must be called holding <see cref="_writeLock"/>.</summary>
-    private void RollOver(long nowHns, bool waitForFinalise)
+    /// <summary>
+    /// Must be called holding <see cref="_writeLock"/>. The finished segment is finalised on
+    /// the worker; jobs run in order, so the ring stays in capture order without waiting.
+    /// </summary>
+    private void RollOver(long nowHns)
     {
         var finished = _current;
         string? finishedPath = finished?.FilePath;
@@ -370,21 +369,11 @@ internal sealed class ReplayBuffer : IDisposable
 
         if (finished is null || finishedPath is null) return;
 
-        if (waitForFinalise)
+        Enqueue(() =>
         {
-            // The caller has already drained the worker, so everything earlier is in the ring
-            // and this segment appends in the right place.
             try { finished.Stop(); } catch { }
             AddSegment(finishedPath, startedAt, duration);
-        }
-        else
-        {
-            Enqueue(() =>
-            {
-                try { finished.Stop(); } catch { }
-                AddSegment(finishedPath, startedAt, duration);
-            });
-        }
+        });
     }
 
     private void AddSegment(string path, long startHns, long durationHns)
@@ -464,7 +453,8 @@ internal sealed class ReplayBuffer : IDisposable
         var recorder = new Recorder();
         string path = Path.Combine(_folder, $"seg_{Interlocked.Increment(ref _sequence):D6}.mp4");
         // Video only: the sound is buffered raw and encoded when a clip is saved.
-        recorder.Start(path, _settings, _deviceManager, _subtype, _width, _height, _fpsNum, _fpsDen, null);
+        recorder.Start(path, _settings, _plan ?? EncoderPlan.Software(_settings.Codec), ContainerFormat.Mp4,
+                       _subtype, _width, _height, _fpsNum, _fpsDen, null);
         return recorder;
     }
 

@@ -37,13 +37,7 @@ internal abstract class Overlay : Control
     protected static void RoundedBackground(Graphics g, Rectangle bounds, Color colour, int radius = 8)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = new GraphicsPath();
-        var r = new Rectangle(bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
-        path.AddArc(r.X, r.Y, radius * 2, radius * 2, 180, 90);
-        path.AddArc(r.Right - radius * 2, r.Y, radius * 2, radius * 2, 270, 90);
-        path.AddArc(r.Right - radius * 2, r.Bottom - radius * 2, radius * 2, radius * 2, 0, 90);
-        path.AddArc(r.X, r.Bottom - radius * 2, radius * 2, radius * 2, 90, 90);
-        path.CloseFigure();
+        using var path = FlatButton.Rounded(new Rectangle(bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1), radius);
         using var brush = new SolidBrush(colour);
         g.FillPath(brush, path);
     }

@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RipsawStudio.Record;
 using RipsawStudio.Render;
 
 namespace RipsawStudio;
@@ -45,7 +46,6 @@ public sealed class ProfileData
     public int VideoBitrateKbps { get; set; } = 25_000;
     public int AudioBitrateKbps { get; set; } = 192;
     public int AudioOffsetMs { get; set; }
-    public bool HardwareEncoder { get; set; } = true;
 
     public override string ToString() => Name;
 }
@@ -129,7 +129,25 @@ public sealed class AppSettings
     public int VideoBitrateKbps { get; set; } = 25_000;
     public int AudioBitrateKbps { get; set; } = 192;
     public int AudioOffsetMs { get; set; }
-    public bool HardwareEncoder { get; set; } = true;
+
+    // ---- encoder (the machine's, not the console's - so not part of a profile) -----------
+    public VideoCodec Codec { get; set; } = VideoCodec.H264;
+    /// <summary>"auto", "sw", or "hw:" + a GPU name - see <see cref="EncoderInfo.Id"/>.</summary>
+    public string EncoderId { get; set; } = "auto";
+    public ContainerFormat Container { get; set; } = ContainerFormat.FragmentedMp4;
+    public RateControl RateControl { get; set; } = RateControl.Cbr;
+    public int Quality { get; set; } = 70;
+    public int KeyframeSeconds { get; set; } = 2;
+
+    /// <summary>
+    /// Read only to migrate files from before the encoder could be chosen: false there meant
+    /// "software". Nulled once migrated, so it is never written back out.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? HardwareEncoder { get; set; }
+
+    /// <summary>The newest version the user has already been told about, so it is said once.</summary>
+    public string? NotifiedUpdate { get; set; }
 
     /// <summary>Whether the settings panel was open when the app last closed.</summary>
     public bool PanelOpen { get; set; } = true;
@@ -145,6 +163,13 @@ public sealed class AppSettings
 
     /// <summary>Keyed by <c>ShortcutAction</c> name. Anything missing falls back to its default.</summary>
     public Dictionary<string, ShortcutBinding> Shortcuts { get; set; } = new();
+
+    /// <summary>
+    /// Registers the capture shortcuts system-wide, so they fire while a game has focus
+    /// rather than only when Ripsaw Studio's own window does. Off by default: it takes the
+    /// chords away from every other program on the machine for as long as the app runs.
+    /// </summary>
+    public bool GlobalShortcuts { get; set; }
 
     public static string SettingsPath => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RipsawStudio", "settings.json");
@@ -195,12 +220,33 @@ public sealed class AppSettings
         VideoBitrateKbps = d.VideoBitrateKbps;
         AudioBitrateKbps = d.AudioBitrateKbps;
         AudioOffsetMs = d.AudioOffsetMs;
-        HardwareEncoder = d.HardwareEncoder;
+        Codec = d.Codec;
+        EncoderId = d.EncoderId;
+        Container = d.Container;
+        RateControl = d.RateControl;
+        Quality = d.Quality;
+        KeyframeSeconds = d.KeyframeSeconds;
 
         AlwaysOnTop = d.AlwaysOnTop;
         AutoStart = d.AutoStart;
         ShowStatusOverlay = d.ShowStatusOverlay;
+        GlobalShortcuts = d.GlobalShortcuts;
     }
+
+    public RecordSettings ToRecordSettings() => new()
+    {
+        OutputFolder = RecordsFolder,
+        VideoBitrateKbps = VideoBitrateKbps,
+        AudioBitrateKbps = AudioBitrateKbps,
+        AudioOffsetMs = AudioOffsetMs,
+        Codec = Codec,
+        EncoderId = EncoderId,
+        Container = Container,
+        RateControl = RateControl,
+        Quality = Quality,
+        KeyframeSeconds = KeyframeSeconds,
+        FullRangeSource = Range == RangeMode.Compress,
+    };
 
     public PictureSettings ToPicture() => new()
     {
@@ -335,7 +381,16 @@ public sealed class AppSettings
                 ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath), Options) ?? new AppSettings()
                 : new AppSettings();
         }
-        catch { settings = new AppSettings(); /* a corrupt settings file must never stop the app starting */ }
+        catch
+        {
+            // A corrupt settings file must never stop the app starting - but it is kept aside
+            // rather than silently overwritten by the defaults at the next save.
+            settings = new AppSettings();
+            try { File.Copy(SettingsPath, SettingsPath + ".corrupt", overwrite: true); } catch { }
+        }
+
+        if (settings.HardwareEncoder == false && settings.EncoderId == "auto") settings.EncoderId = "sw";
+        settings.HardwareEncoder = null;
 
         // A file written before Records/Replay/Screenshots had their own folders carried one
         // OutputFolder that everything landed in. Migrate it once: if it had been pointed
@@ -351,6 +406,8 @@ public sealed class AppSettings
         {
             settings.RecordsFolder = settings.OutputFolder;
         }
+        // Consumed: left in place, it would fire again the day Records is set back to its default.
+        settings.OutputFolder = DefaultRoot;
 
         // A file written before profiles existed becomes the "Default" profile, so nobody
         // loses what they had set up.
@@ -366,13 +423,19 @@ public sealed class AppSettings
         return settings;
     }
 
+    /// <summary>
+    /// Written to a temporary file and swapped in, so a crash or power cut mid-write leaves
+    /// the previous settings rather than half a file.
+    /// </summary>
     public void Save()
     {
         try
         {
             SyncActiveProfile();
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, Options));
+            string temp = SettingsPath + ".tmp";
+            File.WriteAllText(temp, JsonSerializer.Serialize(this, Options));
+            File.Move(temp, SettingsPath, overwrite: true);
         }
         catch { }
     }

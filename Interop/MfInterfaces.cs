@@ -253,6 +253,21 @@ internal interface IMFSinkWriter
     [PreserveSig] int GetStatistics(uint dwStreamIndex, IntPtr pStats);
 }
 
+/// <summary>
+/// IMFTransform, declared only as far as GetAttributes - the one call made, to find out which
+/// encoder a sink writer actually picked. Later slots are never reached, so they are left off.
+/// </summary>
+[ComImport, Guid("bf94c121-5b05-4e6f-8000-ba598961414d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IMFTransform
+{
+    [PreserveSig] int GetStreamLimits(out uint pdwInputMinimum, out uint pdwInputMaximum, out uint pdwOutputMinimum, out uint pdwOutputMaximum);
+    [PreserveSig] int GetStreamCount(out uint pcInputStreams, out uint pcOutputStreams);
+    [PreserveSig] int GetStreamIDs(uint dwInputIDArraySize, IntPtr pdwInputIDs, uint dwOutputIDArraySize, IntPtr pdwOutputIDs);
+    [PreserveSig] int GetInputStreamInfo(uint dwInputStreamID, IntPtr pStreamInfo);
+    [PreserveSig] int GetOutputStreamInfo(uint dwOutputStreamID, IntPtr pStreamInfo);
+    [PreserveSig] int GetAttributes(out IMFAttributes? pAttributes);
+}
+
 /// <summary>IMFMediaEventGenerator + IMFMediaSource. Only Shutdown is called; the rest hold vtable slots.</summary>
 [ComImport, Guid("279a808d-aec7-40c8-9c6b-a6b492c78a66"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IMFMediaSource

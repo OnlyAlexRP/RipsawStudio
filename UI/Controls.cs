@@ -51,8 +51,8 @@ internal sealed class Slider : Control
         Invalidate();
     }
 
-    private const int ThumbRadius = 6;
-    private Rectangle TrackRect => new(ThumbRadius, Height / 2 - 2, Math.Max(1, Width - ThumbRadius * 2), 4);
+    private const int ThumbRadius = 7;
+    private Rectangle TrackRect => new(ThumbRadius, Height / 2 - 1, Math.Max(1, Width - ThumbRadius * 2), 3);
 
     private float Fraction => Maximum <= Minimum ? 0f : (float)(_value - Minimum) / (Maximum - Minimum);
 
@@ -67,7 +67,7 @@ internal sealed class Slider : Control
             g.FillRectangle(back, track);
 
         int thumbX = track.X + (int)Math.Round(track.Width * Fraction);
-        using (var fill = new SolidBrush(Enabled ? Theme.Accent : Theme.FieldBorder))
+        using (var fill = new SolidBrush(Enabled ? Theme.TextDim : Theme.FieldBorder))
         {
             if (Bipolar)
             {
@@ -83,17 +83,12 @@ internal sealed class Slider : Control
             }
         }
 
-        int r = _hovered || _dragging ? ThumbRadius + 1 : ThumbRadius;
-        var thumb = new Rectangle(thumbX - r, Height / 2 - r, r * 2, r * 2);
-        using (var shadow = new SolidBrush(Color.FromArgb(60, 0, 0, 0)))
-            g.FillEllipse(shadow, thumb.X, thumb.Y + 1, thumb.Width, thumb.Height);
-        using (var brush = new SolidBrush(Enabled ? Color.White : Theme.TextDim))
-            g.FillEllipse(brush, thumb);
-        if (Focused)
-        {
-            using var pen = new Pen(Theme.Accent, 2f);
-            g.DrawEllipse(pen, thumb);
-        }
+        // A flat vertical bar rather than a round knob - the fader cap on a mixing desk.
+        int h = _hovered || _dragging ? 18 : 16;
+        var thumb = new Rectangle(thumbX - 3, Height / 2 - h / 2, 6, h);
+        using (var path = FlatButton.Rounded(thumb, 2))
+        using (var brush = new SolidBrush(Enabled ? (Focused || _dragging ? Theme.Accent : Theme.Text) : Theme.TextDim))
+            g.FillPath(brush, path);
     }
 
     private void SetFromMouse(int x)
@@ -156,7 +151,7 @@ internal sealed class Slider : Control
 internal sealed class FlatCombo : Control
 {
     /// <summary>Minimal Items collection covering exactly what this app's call sites use
-    /// (Add/AddRange/Clear/IndexOf/Count/indexing/LINQ) - clearing also resets the selection,
+    /// (Add/Clear/IndexOf/Count/indexing/LINQ) - clearing also resets the selection,
     /// matching ComboBox.Items.Clear()'s behaviour.</summary>
     public sealed class ItemCollection : IEnumerable<object>
     {
@@ -168,7 +163,6 @@ internal sealed class FlatCombo : Control
         public object this[int index] => _list[index];
 
         public void Add(object item) { _list.Add(item); _owner.Invalidate(); }
-        public void AddRange(IEnumerable<object> items) { _list.AddRange(items); _owner.Invalidate(); }
         public void Clear() { _list.Clear(); _owner.SelectedIndex = -1; _owner.Invalidate(); }
         public int IndexOf(object item) => _list.IndexOf(item);
 
@@ -218,43 +212,43 @@ internal sealed class FlatCombo : Control
         BackColor = Theme.Field;
         Cursor = Cursors.Default;
         TabStop = true;
-        Height = 24;
+        Height = 30;
+        Font = Theme.Body;
     }
+
+    private bool _hovered;
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var back = new SolidBrush(Theme.Field))
-            g.FillRectangle(back, 0, 0, Width, Height);
-
-        using (var text = new SolidBrush(Enabled ? Theme.Text : Theme.TextDim))
-        using (var format = new StringFormat
+        g.Clear(Parent?.BackColor ?? Theme.Shell);
+        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+        using (var path = FlatButton.Rounded(rect, 5))
         {
-            LineAlignment = StringAlignment.Center,
-            Trimming = StringTrimming.EllipsisCharacter,
-            FormatFlags = StringFormatFlags.NoWrap,
-        })
-        {
-            var textBounds = new RectangleF(5, 0, Width - Height - 5, Height);
-            g.DrawString(SelectedItem?.ToString() ?? "", Font, text, textBounds, format);
+            using var back = new SolidBrush(_openList is not null || _hovered ? Theme.Hover : Theme.Field);
+            g.FillPath(back, path);
+            if (Focused || _openList is not null)
+            {
+                using var ring = new Pen(Theme.Accent);
+                g.DrawPath(ring, path);
+            }
         }
 
-        // Sizing the button off Height (already the control's real, DPI-scaled size at paint
-        // time) keeps this a plain right-aligned arrow on the field's own colour instead of a
-        // separate boxed-in button at any scale.
-        int cx = Width - Height / 2;
-        int cy = Height / 2 - 1;
-        using (var pen = new Pen(Enabled ? Theme.TextDim : Theme.FieldBorder, 1.6f))
-            g.DrawLines(pen, new[] { new Point(cx - 4, cy - 1), new Point(cx, cy + 3), new Point(cx + 4, cy - 1) });
+        TextRenderer.DrawText(g, SelectedItem?.ToString() ?? "", Font,
+            new Rectangle(10, 0, Width - Height - 10, Height), Enabled ? Theme.Text : Theme.TextFaint,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
-        using var border = new Pen(Theme.FieldBorder);
-        g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+        // Sized off Height (already the control's real, DPI-scaled size at paint time).
+        float cx = Width - Height / 2f;
+        float cy = Height / 2f;
+        using (var pen = new Pen(Enabled ? Theme.TextDim : Theme.FieldBorder, 1.5f)
+               { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+            g.DrawLines(pen, new[] { new PointF(cx - 4, cy - 2), new PointF(cx, cy + 2), new PointF(cx + 4, cy - 2) });
     }
 
-    // No hover-based redraw at all: the whole point of this control is that passing the mouse
-    // over it does nothing visually until it is actually clicked.
-
+    protected override void OnMouseEnter(EventArgs e) { _hovered = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hovered = false; Invalidate(); base.OnMouseLeave(e); }
     protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
     protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
 
@@ -309,8 +303,8 @@ internal sealed class FlatCombo : Control
 /// WinForms' native ListBox/ComboBox drawing.</summary>
 internal sealed class FlatComboList : Form
 {
-    private const int RowHeight = 24;
-    private const int MaxVisibleRows = 10;
+    private const int RowHeight = 28;
+    private const int MaxVisibleRows = 12;
 
     private readonly FlatCombo.ItemCollection _items;
     private readonly int _visibleRows;
@@ -319,10 +313,13 @@ internal sealed class FlatComboList : Form
 
     public event Action<int>? ItemPicked;
 
+    private readonly int _selectedIndex;
+
     public FlatComboList(FlatCombo.ItemCollection items, int selectedIndex, int width, Font font)
     {
         _items = items;
         _hoverIndex = selectedIndex;
+        _selectedIndex = selectedIndex;
         _visibleRows = Math.Min(_items.Count, MaxVisibleRows);
         _scrollOffset = Math.Clamp(selectedIndex - _visibleRows / 2, 0, Math.Max(0, _items.Count - _visibleRows));
 
@@ -332,7 +329,7 @@ internal sealed class FlatComboList : Form
         BackColor = Theme.Field;
         Font = font;
         Width = width;
-        Height = _visibleRows * RowHeight + 2;
+        Height = _visibleRows * RowHeight + 3;
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
     }
 
@@ -340,7 +337,7 @@ internal sealed class FlatComboList : Form
     {
         var area = Screen.FromPoint(screenTopLeft).WorkingArea;
         int x = Math.Clamp(screenTopLeft.X, area.Left, area.Right - Width);
-        int y = screenTopLeft.Y + Height > area.Bottom ? screenTopLeft.Y - Height - 24 : screenTopLeft.Y;
+        int y = screenTopLeft.Y + Height > area.Bottom ? screenTopLeft.Y - Height - 34 : screenTopLeft.Y + 2;
         Location = new Point(x, y);
         Show();
         Activate();
@@ -385,24 +382,22 @@ internal sealed class FlatComboList : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        using (var format = new StringFormat
+        g.Clear(Theme.Field);
+        for (int row = 0; row < _visibleRows; row++)
         {
-            LineAlignment = StringAlignment.Center,
-            Trimming = StringTrimming.EllipsisCharacter,
-            FormatFlags = StringFormatFlags.NoWrap,
-        })
-        {
-            for (int row = 0; row < _visibleRows; row++)
-            {
-                int i = _scrollOffset + row;
-                bool hot = i == _hoverIndex;
-                var bounds2 = new Rectangle(0, row * RowHeight, Width, RowHeight);
-                using (var back = new SolidBrush(hot ? Theme.Accent : Theme.Field))
-                    g.FillRectangle(back, bounds2);
-                using var text = new SolidBrush(hot ? Color.White : Theme.Text);
-                var textBounds = new RectangleF(bounds2.X + 5, bounds2.Y, bounds2.Width - 10, bounds2.Height);
-                g.DrawString(_items[i]?.ToString() ?? "", Font, text, textBounds, format);
-            }
+            int i = _scrollOffset + row;
+            var bounds = new Rectangle(1, row * RowHeight + 1, Width - 2, RowHeight);
+            if (i == _hoverIndex)
+                using (var back = new SolidBrush(Theme.Selected))
+                    g.FillRectangle(back, bounds);
+            // The current value keeps an accent tick, so it can be found again after hovering away.
+            if (i == _selectedIndex)
+                using (var mark = new SolidBrush(Theme.Accent))
+                    g.FillRectangle(mark, bounds.X, bounds.Y + 7, 2, bounds.Height - 14);
+            TextRenderer.DrawText(g, _items[i]?.ToString() ?? "", Font,
+                new Rectangle(bounds.X + 11, bounds.Y, bounds.Width - 18, bounds.Height),
+                i == _selectedIndex ? Theme.Text : Theme.TextDim,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
         using var border = new Pen(Theme.FieldBorder);
         g.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
@@ -435,7 +430,7 @@ internal sealed class NumericField : Control
     public NumericField()
     {
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
-        Height = 24;
+        Height = 30;
         BackColor = Theme.Field;
         _hoverButton = -1;
 
@@ -444,7 +439,8 @@ internal sealed class NumericField : Control
         _text.ForeColor = Theme.Text;
         _text.TextAlign = HorizontalAlignment.Right;
         _text.Font = Theme.Body;
-        _text.Leave += (_, _) => Commit();
+        _text.Leave += (_, _) => { Commit(); Invalidate(); };
+        _text.Enter += (_, _) => Invalidate();
         _text.KeyDown += OnTextKeyDown;
         Controls.Add(_text);
 
@@ -564,13 +560,16 @@ internal sealed class NumericField : Control
         {
             using var fill = new SolidBrush(Theme.Field);
             g.FillPath(fill, path);
-            using var border = new Pen(_hoverButton >= 0 || _text.Focused ? Theme.Accent : Theme.FieldBorder);
-            g.DrawPath(border, path);
+            if (_text.Focused)
+            {
+                using var border = new Pen(Theme.Accent);
+                g.DrawPath(border, path);
+            }
         }
 
         int columnLeft = Width - ButtonWidth;
-        using (var divider = new Pen(Theme.FieldBorder))
-            g.DrawLine(divider, columnLeft, 3, columnLeft, Height - 4);
+        using (var divider = new Pen(Theme.Shell))
+            g.DrawLine(divider, columnLeft, 4, columnLeft, Height - 5);
 
         DrawChevron(g, 0, columnLeft, up: true);
         DrawChevron(g, 1, columnLeft, up: false);
@@ -602,7 +601,8 @@ internal sealed class NumericField : Control
 /// <summary>Flat button with a hover state and an optional accent or danger role.</summary>
 internal sealed class FlatButton : Button
 {
-    public enum Role { Normal, Accent, Danger }
+    /// <summary>Ghost: no fill until hovered, for small actions that should not compete.</summary>
+    public enum Role { Normal, Accent, Danger, Ghost }
 
     private bool _hovered;
     private Role _role = Role.Normal;
@@ -621,7 +621,8 @@ internal sealed class FlatButton : Button
         FlatStyle = FlatStyle.Flat;
         FlatAppearance.BorderSize = 0;
         Cursor = Cursors.Hand;
-        Height = 28;
+        Height = 32;
+        Font = Theme.Body;
         UseVisualStyleBackColor = false;
     }
 
@@ -637,26 +638,28 @@ internal sealed class FlatButton : Button
         Color fill = _role switch
         {
             Role.Accent => _hovered ? Theme.AccentHover : Theme.Accent,
-            Role.Danger => _hovered ? Theme.AccentHover : Theme.Accent,
+            Role.Danger => _hovered ? Color.FromArgb(240, 98, 102) : Theme.Record,
+            Role.Ghost => _hovered ? Theme.Hover : Parent?.BackColor ?? Theme.Shell,
             _ => _hovered ? Theme.Hover : Theme.Field,
         };
         Color text = _role switch
         {
-            Role.Accent => Color.White,
+            Role.Accent => Theme.AccentInk,
             Role.Danger => Color.White,
+            Role.Ghost => _hovered ? Theme.Text : Theme.TextDim,
             _ => Theme.Text,
         };
-        if (!Enabled) { fill = Theme.Field; text = Theme.TextDim; }
+        if (!Enabled) { fill = Theme.Field; text = Theme.TextFaint; }
 
         var rect = new Rectangle(0, 0, Width - 1, Height - 1);
         using (var path = Rounded(rect, 5))
         using (var brush = new SolidBrush(fill))
             g.FillPath(brush, path);
 
-        if (_role != Role.Accent)
+        if (Focused && ShowFocusCues)
         {
             using var path = Rounded(rect, 5);
-            using var pen = new Pen(Theme.FieldBorder);
+            using var pen = new Pen(Theme.Accent);
             g.DrawPath(pen, path);
         }
 
@@ -698,17 +701,22 @@ internal sealed class FlatButton : Button
     }
 }
 
-/// <summary>Checkbox drawn to match, since the system one does not follow a custom palette.</summary>
+/// <summary>
+/// An on/off switch with its label beside it. Still a CheckBox underneath, so keyboard
+/// handling and CheckedChanged come for free; only the drawing is different.
+/// </summary>
 internal sealed class FlatCheck : CheckBox
 {
     private bool _hovered;
+    private const int TrackWidth = 34, TrackHeight = 18;
 
     public FlatCheck()
     {
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
         Cursor = Cursors.Hand;
-        Height = 22;
+        Height = 26;
         ForeColor = Theme.Text;
+        Font = Theme.Body;
     }
 
     protected override void OnMouseEnter(EventArgs e) { _hovered = true; Invalidate(); base.OnMouseEnter(e); }
@@ -720,30 +728,161 @@ internal sealed class FlatCheck : CheckBox
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(Parent?.BackColor ?? Theme.Card);
 
-        var box = new Rectangle(0, Height / 2 - 8, 16, 16);
-        using (var path = FlatButton.Rounded(box, 4))
+        var track = new Rectangle(0, (Height - TrackHeight) / 2, TrackWidth, TrackHeight);
+        using (var path = FlatButton.Rounded(track, TrackHeight / 2))
         {
-            using var fill = new SolidBrush(Checked ? Theme.Accent : Theme.Field);
-            g.FillPath(fill, path);
-            using var pen = new Pen(Checked ? Theme.Accent : (_hovered ? Theme.FieldBorder : Theme.FieldBorder));
-            g.DrawPath(pen, path);
-        }
-
-        if (Checked)
-        {
-            using var tick = new Pen(Color.White, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            g.DrawLines(tick, new[]
+            Color fill = !Enabled ? Theme.Field : Checked ? Theme.Accent : _hovered ? Theme.Selected : Theme.Track;
+            using var brush = new SolidBrush(fill);
+            g.FillPath(brush, path);
+            if (Focused && ShowFocusCues)
             {
-                new Point(box.X + 4, box.Y + 8),
-                new Point(box.X + 7, box.Y + 11),
-                new Point(box.X + 12, box.Y + 5),
-            });
+                using var ring = new Pen(Theme.AccentHover);
+                g.DrawPath(ring, path);
+            }
         }
+        int knob = TrackHeight - 6;
+        int knobX = Checked ? track.Right - knob - 3 : track.X + 3;
+        using (var brush = new SolidBrush(Checked ? Theme.AccentInk : Theme.TextDim))
+            g.FillEllipse(brush, knobX, track.Y + 3, knob, knob);
 
-        var text = new Rectangle(box.Right + 8, 0, Width - box.Right - 8, Height);
-        TextRenderer.DrawText(g, Text, Font, text, Enabled ? ForeColor : Theme.TextDim,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        var text = new Rectangle(track.Right + 12, 0, Width - track.Right - 12, Height);
+        TextRenderer.DrawText(g, Text, Font, text, Enabled ? ForeColor : Theme.TextFaint,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
     }
+}
+
+/// <summary>
+/// A row of mutually exclusive choices, all visible at once - for a choice between two to
+/// four short options, where a dropdown would hide what the alternatives are.
+/// </summary>
+internal sealed class Segmented : Control
+{
+    private string[] _items = Array.Empty<string>();
+    private int _selectedIndex = -1;
+    private int _hovered = -1;
+    private readonly HashSet<int> _disabled = new();
+
+    public event EventHandler? SelectedIndexChanged;
+
+    public Segmented()
+    {
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
+                 ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        Height = 30;
+        Font = Theme.Body;
+        Cursor = Cursors.Hand;
+        TabStop = true;
+    }
+
+    public string[] Items
+    {
+        get => _items;
+        set { _items = value; Invalidate(); }
+    }
+
+    public int SelectedIndex
+    {
+        get => _selectedIndex;
+        set
+        {
+            if (value == _selectedIndex || value >= _items.Length) return;
+            _selectedIndex = value;
+            Invalidate();
+            SelectedIndexChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public void SetSelectedSilently(int index)
+    {
+        _selectedIndex = index;
+        Invalidate();
+    }
+
+    /// <summary>Greys out a choice that does not apply right now, e.g. a container a codec cannot go in.</summary>
+    public void SetEnabled(int index, bool enabled)
+    {
+        if (enabled ? _disabled.Remove(index) : _disabled.Add(index)) Invalidate();
+    }
+
+    private Rectangle SegmentRect(int index)
+    {
+        int width = (Width - 4) / Math.Max(1, _items.Length);
+        return new Rectangle(2 + index * width, 2, index == _items.Length - 1 ? Width - 4 - index * width : width, Height - 4);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(Parent?.BackColor ?? Theme.Shell);
+        using (var path = FlatButton.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 6))
+        using (var back = new SolidBrush(Theme.Field))
+            g.FillPath(back, path);
+
+        for (int i = 0; i < _items.Length; i++)
+        {
+            var r = SegmentRect(i);
+            bool selected = i == _selectedIndex;
+            bool disabled = _disabled.Contains(i);
+            if (selected || (i == _hovered && !disabled))
+            {
+                using var path = FlatButton.Rounded(new Rectangle(r.X, r.Y, r.Width - 1, r.Height - 1), 4);
+                using var fill = new SolidBrush(selected ? Theme.Selected : Theme.Hover);
+                g.FillPath(fill, path);
+                if (selected && Focused && ShowFocusCues)
+                {
+                    using var ring = new Pen(Theme.Accent);
+                    g.DrawPath(ring, path);
+                }
+            }
+            Color ink = disabled ? Theme.TextFaint : selected ? Theme.Text : Theme.TextDim;
+            TextRenderer.DrawText(g, _items[i], Font, r, ink,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    private int HitTest(Point p)
+    {
+        for (int i = 0; i < _items.Length; i++)
+            if (SegmentRect(i).Contains(p)) return i;
+        return -1;
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        int hit = HitTest(e.Location);
+        if (hit == _hovered) return;
+        _hovered = hit;
+        Invalidate();
+    }
+
+    protected override void OnMouseLeave(EventArgs e) { _hovered = -1; Invalidate(); }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        Focus();
+        int hit = HitTest(e.Location);
+        if (hit >= 0 && !_disabled.Contains(hit)) SelectedIndex = hit;
+    }
+
+    protected override bool IsInputKey(Keys keyData) => keyData is Keys.Left or Keys.Right || base.IsInputKey(keyData);
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        int step = e.KeyCode == Keys.Left ? -1 : e.KeyCode == Keys.Right ? 1 : 0;
+        if (step == 0 || _items.Length == 0) return;
+        int next = _selectedIndex;
+        for (int tries = 0; tries < _items.Length; tries++)
+        {
+            next = (next + step + _items.Length) % _items.Length;
+            if (!_disabled.Contains(next)) break;
+        }
+        SelectedIndex = next;
+        e.Handled = true;
+    }
+
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
 }
 
 /// <summary>
@@ -770,6 +909,14 @@ internal sealed class KeyCaptureButton : Control
     public static bool AnyCapturing =>
         _listening is { _capturing: true, IsDisposed: false, Visible: true };
 
+    /// <summary>
+    /// Raised whenever <see cref="AnyCapturing"/> changes. System-wide hotkeys have to be
+    /// released while a field is listening: Windows delivers a registered chord to the
+    /// registering window as WM_HOTKEY, so the keystroke would never reach this control and
+    /// the very keys worth rebinding would be the ones impossible to rebind.
+    /// </summary>
+    public static event EventHandler? CapturingChanged;
+
     /// <summary>Raised with the new chord; Keys.None means the binding was cleared.</summary>
     public event EventHandler<Keys>? Rebound;
 
@@ -777,7 +924,7 @@ internal sealed class KeyCaptureButton : Control
     {
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.UserPaint | ControlStyles.Selectable, true);
-        Height = 24;
+        Height = 30;
         BackColor = Theme.Field;
         Cursor = Cursors.Hand;
         TabStop = true;
@@ -817,6 +964,7 @@ internal sealed class KeyCaptureButton : Control
         _capturing = true;
         _listening = this;
         Invalidate();
+        CapturingChanged?.Invoke(null, EventArgs.Empty);
     }
 
     private void StopCapturing()
@@ -825,6 +973,7 @@ internal sealed class KeyCaptureButton : Control
         if (!_capturing) return;
         _capturing = false;
         if (!IsDisposed) Invalidate();
+        CapturingChanged?.Invoke(null, EventArgs.Empty);
     }
 
     private void Commit(Keys keys)
@@ -868,7 +1017,7 @@ internal sealed class KeyCaptureButton : Control
         {
             using var fill = new SolidBrush(_capturing ? Theme.Hover : Theme.Field);
             g.FillPath(fill, path);
-            using var border = new Pen(_capturing ? Theme.Accent : _hovered || Focused ? Theme.FieldBorder : Theme.FieldBorder);
+            using var border = new Pen(_capturing ? Theme.Accent : _hovered ? Theme.FieldBorder : Theme.Field);
             g.DrawPath(border, path);
         }
 

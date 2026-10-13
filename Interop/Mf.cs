@@ -49,6 +49,7 @@ internal static class Mf
     public static readonly Guid MF_MT_AVG_BITRATE = new("20332624-fb0d-4d9e-bd0d-cbf6786c102e");
     public static readonly Guid MF_MT_MPEG2_PROFILE = new("ad76a80b-2d5c-4e0b-b375-64e520137036");
     public static readonly Guid MF_MT_DEFAULT_STRIDE = new("644b4e48-1e02-4516-b0eb-c01ca9d49ac6");
+    public static readonly Guid MF_MT_VIDEO_NOMINAL_RANGE = new("c21b8ee5-b956-4071-8daf-325edf5cab11");
 
     public static readonly Guid MF_MT_AUDIO_NUM_CHANNELS = new("37e48bf5-645e-4c5b-89de-ada9e29b696a");
     public static readonly Guid MF_MT_AUDIO_SAMPLES_PER_SECOND = new("5faeeae7-0290-4c31-9e8a-c534f68d9dba");
@@ -82,8 +83,50 @@ internal static class Mf
     public static readonly Guid MF_SINK_WRITER_DISABLE_THROTTLING = new("08b845d8-2b74-4afe-9d53-be16d2d5ae4f");
     public static readonly Guid MF_LOW_LATENCY = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
 
+    public static readonly Guid MFVideoFormat_HEVC = FourCc("HEVC");
+
+    // Container selection on the sink writer. Without it the writer picks by file extension.
+    public static readonly Guid MF_TRANSCODE_CONTAINERTYPE = new("150ff23f-4abc-478b-ac4f-e1916fba1cca");
+    public static readonly Guid MFTranscodeContainerType_MPEG4 = new("dc6cd05d-b9d0-40ef-bd35-fa622c1ab28a");
+    public static readonly Guid MFTranscodeContainerType_FMPEG4 = new("9ba876f1-419f-4b77-a1e0-35959d9d4004");
+
+    // Encoder enumeration
+    public static readonly Guid MFT_CATEGORY_VIDEO_ENCODER = new("f79eac7d-e545-4387-bdee-d647d7bde42a");
+    public static readonly Guid MFT_FRIENDLY_NAME_Attribute = new("314ffbae-5b41-4c95-9c19-4e7d586face3");
+    public static readonly Guid MFT_ENUM_HARDWARE_VENDOR_ID_Attribute = new("3aecb0cc-035b-4bcc-8185-2b8d551ef3af");
+    public static readonly Guid MFT_ENUM_HARDWARE_URL_Attribute = new("2fb866ac-b078-4942-ab6c-003d05cda674");
+    public static readonly Guid MFT_ENUM_ADAPTER_LUID = new("1d39518c-e220-4da8-a07f-ba172552d6b1");
+    public static readonly Guid MFT_TRANSFORM_CLSID_Attribute = new("6821c42b-65a4-4e82-99bc-9a88205e9cd0");
+    public const uint MFT_ENUM_FLAG_SYNCMFT = 0x1;
+    public const uint MFT_ENUM_FLAG_ASYNCMFT = 0x2;
+    public const uint MFT_ENUM_FLAG_HARDWARE = 0x4;
+    public const uint MFT_ENUM_FLAG_LOCALMFT = 0x10;
+    public const uint MFT_ENUM_FLAG_SORTANDFILTER = 0x40;
+
+    // Encoder settings, passed to IMFSinkWriter::SetInputMediaType as an attribute store.
+    public static readonly Guid CODECAPI_AVEncCommonRateControlMode = new("1c0608e9-370c-4710-8a58-cb6181c42423");
+    public static readonly Guid CODECAPI_AVEncCommonQuality = new("fcbf57a3-7ea5-4b0c-9644-69b40c39c391");
+    public static readonly Guid CODECAPI_AVEncCommonMeanBitRate = new("f7222374-2144-4815-b550-a37f8e12ee52");
+    public static readonly Guid CODECAPI_AVEncCommonMaxBitRate = new("9651eae4-39b9-4ebf-85ef-d7f444ec7465");
+    public static readonly Guid CODECAPI_AVEncMPVGOPSize = new("95f31b26-95a4-41aa-9303-246a7fc6eef1");
+    public const uint eAVEncCommonRateControlMode_CBR = 0;
+    public const uint eAVEncCommonRateControlMode_PeakConstrainedVBR = 1;
+    public const uint eAVEncCommonRateControlMode_UnconstrainedVBR = 2;
+    public const uint eAVEncCommonRateControlMode_Quality = 3;
+
+    public const uint eAVEncH264VProfile_High = 100;
+    public const uint eAVEncH265VProfile_Main_420_8 = 1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MFT_REGISTER_TYPE_INFO
+    {
+        public Guid guidMajorType;
+        public Guid guidSubtype;
+    }
+
     // Interface IIDs
     public static readonly Guid IID_ID3D11Texture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
+    public static readonly Guid IID_IMFTransform = new("bf94c121-5b05-4e6f-8000-ba598961414d");
 
     private static Guid FourCc(string cc)
     {
@@ -143,6 +186,14 @@ internal static class Mf
     [DllImport("mfreadwrite.dll", ExactSpelling = true, CharSet = CharSet.Unicode)]
     public static extern int MFCreateSourceReaderFromURL(string pwszURL, IMFAttributes? pAttributes,
         out IMFSourceReader ppSourceReader);
+
+    [DllImport("mfplat.dll", ExactSpelling = true)]
+    public static extern int MFCreateDXGISurfaceBuffer(ref Guid riid, IntPtr punkSurface, uint uSubresourceIndex,
+        [MarshalAs(UnmanagedType.Bool)] bool fBottomUpWhenLinear, out IMFMediaBuffer ppBuffer);
+
+    [DllImport("mfplat.dll", ExactSpelling = true)]
+    public static extern int MFTEnumEx(Guid guidCategory, uint flags, IntPtr pInputType,
+        ref MFT_REGISTER_TYPE_INFO pOutputType, out IntPtr pppMFTActivate, out uint pnumMFTActivate);
 
     [DllImport("mfreadwrite.dll", ExactSpelling = true, CharSet = CharSet.Unicode)]
     public static extern int MFCreateSinkWriterFromURL(string pwszOutputURL, IntPtr pByteStream,

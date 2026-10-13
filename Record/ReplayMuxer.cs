@@ -104,8 +104,8 @@ internal static class ReplayMuxer
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
         IMFSinkWriter? writer = null;
-        uint videoStream = 0, audioStream = 0;
-        bool hasVideo = false, hasAudio = false;
+        uint videoStream = 0, audioStream;
+        bool hasVideo = false, hasAudio;
         long clipStartHns = segments[0].StartHns;
         var clocks = new Dictionary<uint, StreamClock>();
         var videoTally = new WriteTally();
@@ -169,7 +169,7 @@ internal static class ReplayMuxer
                                     // a quietly silent file, which is the failure that took a
                                     // run on real hardware to find.
                                     if (!hasAudio)
-                                        note = $"the sound could not be encoded (0x{hrAudio:X8}) - the clip is silent";
+                                        note = $"the sound could not be encoded (0x{hrAudio:X8}), the clip is silent";
                                 }
                                 else
                                 {
@@ -225,11 +225,11 @@ internal static class ReplayMuxer
     private static string? Describe(WriteTally video, WriteTally? audio)
     {
         if (audio is not null && audio.Written == 0)
-            return $"none of the sound could be written (0x{audio.LastHr:X8}) - the clip is silent";
+            return $"none of the sound could be written (0x{audio.LastHr:X8}), the clip is silent";
         if (audio is not null && audio.Refused > 0)
-            return $"{audio.Refused} sound blocks were refused (0x{audio.LastHr:X8}) - the clip may skip";
+            return $"{audio.Refused} sound blocks were refused (0x{audio.LastHr:X8}), the clip may skip";
         if (video.Refused > 0)
-            return $"{video.Refused} frames were refused (0x{video.LastHr:X8}) - the clip may jump";
+            return $"{video.Refused} frames were refused (0x{video.LastHr:X8}), the clip may jump";
         return null;
     }
 

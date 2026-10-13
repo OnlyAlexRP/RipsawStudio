@@ -473,7 +473,7 @@ public sealed class AudioMonitor : IDisposable
         try
         {
             Status?.Invoke(this, silent
-                ? $"No audio for {silentMs / 1000}s - restarting the audio device..."
+                ? $"No audio for {silentMs / 1000}s, restarting the audio device..."
                 : "Scheduled audio restart");
             var input = InputDeviceId;
             var output = OutputDeviceId;

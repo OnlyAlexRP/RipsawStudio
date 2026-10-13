@@ -100,6 +100,57 @@ internal static class MfHelpers
         }
     }
 
+    /// <summary>
+    /// Copies a frame into a plain system-memory sample, for an encoder on another GPU. A GPU
+    /// buffer's IMF2DBuffer does the read-back itself and lays the planes out packed, which is
+    /// the layout a memory sample is assumed to have.
+    /// </summary>
+    public static IMFSample CopyToMemorySample(IMFSample source)
+    {
+        Check(source.GetBufferByIndex(0, out var buffer), "GetBufferByIndex(copy)");
+        IMFMediaBuffer? copy = null;
+        try
+        {
+            var twoD = buffer as IMF2DBuffer;
+            uint length = 0;
+            if (twoD is null || twoD.GetContiguousLength(out length) < 0)
+            {
+                Check(source.ConvertToContiguousBuffer(out var contiguous), "ConvertToContiguousBuffer");
+                Release(buffer);
+                buffer = contiguous;
+                Check(buffer.GetCurrentLength(out length), "GetCurrentLength");
+                twoD = null;
+            }
+
+            Check(Mf.MFCreateMemoryBuffer((int)length, out copy), "MFCreateMemoryBuffer(copy)");
+            Check(copy.Lock(out IntPtr dest, out _, out _), "Lock(copy)");
+            try
+            {
+                if (twoD is not null)
+                {
+                    Check(twoD.ContiguousCopyTo(dest, length), "ContiguousCopyTo");
+                }
+                else
+                {
+                    Check(buffer.Lock(out IntPtr src, out _, out _), "Lock(source)");
+                    try { unsafe { Buffer.MemoryCopy((void*)src, (void*)dest, length, length); } }
+                    finally { buffer.Unlock(); }
+                }
+            }
+            finally { copy.Unlock(); }
+            copy.SetCurrentLength(length);
+
+            Check(Mf.MFCreateSample(out var sample), "MFCreateSample(copy)");
+            sample.AddBuffer(copy);
+            return sample;
+        }
+        finally
+        {
+            Release(buffer);
+            Release(copy);
+        }
+    }
+
     /// <summary>Releases a COM object without waiting for the GC. Safe to call with null.</summary>
     public static void Release(object? comObject)
     {
@@ -123,17 +174,17 @@ public sealed class MfException : Exception
     /// </summary>
     private static string Describe(int hr) => hr switch
     {
-        Mf.MF_E_INVALIDMEDIATYPE => " (MF_E_INVALIDMEDIATYPE - the device rejected that format)",
+        Mf.MF_E_INVALIDMEDIATYPE => " (MF_E_INVALIDMEDIATYPE: the device rejected that format)",
         Mf.MF_E_INVALIDSTREAMNUMBER => " (MF_E_INVALIDSTREAMNUMBER)",
-        Mf.MF_E_NO_MORE_TYPES => " (MF_E_NO_MORE_TYPES - the end of the format list)",
-        Mf.MF_E_TOPO_CODEC_NOT_FOUND => " (MF_E_TOPO_CODEC_NOT_FOUND - no codec for this format)",
+        Mf.MF_E_NO_MORE_TYPES => " (MF_E_NO_MORE_TYPES: the end of the format list)",
+        Mf.MF_E_TOPO_CODEC_NOT_FOUND => " (MF_E_TOPO_CODEC_NOT_FOUND: no codec for this format)",
         Mf.MF_E_UNSUPPORTED_D3D_TYPE => " (MF_E_UNSUPPORTED_D3D_TYPE)",
         Mf.MF_E_HW_MFT_FAILED_START_STREAMING =>
-            " (MF_E_HW_MFT_FAILED_START_STREAMING - the hardware transform would not start)",
-        unchecked((int)0x8007001F) => " (ERROR_GEN_FAILURE - device busy or unplugged)",
-        unchecked((int)0x80070005) => " (E_ACCESSDENIED - another app holds the device, or camera privacy is blocking it)",
-        unchecked((int)0x8004027B) => " (the device refused to start - it is most likely already open elsewhere)",
-        unchecked((int)0xC00DABE3) => " (device invalidated - it was unplugged)",
+            " (MF_E_HW_MFT_FAILED_START_STREAMING: the hardware transform would not start)",
+        unchecked((int)0x8007001F) => " (ERROR_GEN_FAILURE: device busy or unplugged)",
+        unchecked((int)0x80070005) => " (E_ACCESSDENIED: another app holds the device, or camera privacy is blocking it)",
+        unchecked((int)0x8004027B) => " (the device refused to start, it is most likely already open elsewhere)",
+        unchecked((int)0xC00DABE3) => " (device invalidated, it was unplugged)",
         _ => "",
     };
 }

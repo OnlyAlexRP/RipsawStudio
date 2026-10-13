@@ -36,17 +36,23 @@ internal sealed class ReplayAudioRing
     public int Channels { get; private set; }
     public bool HasAudio => Channels > 0 && _pcm.Length > 0;
 
+    private PcmResampler? _resampler;
+
     /// <summary>
     /// Sizes the ring for a format and a window. Resets whatever was held if either changed -
     /// two formats cannot share one buffer, and a clip made of both would be noise.
+    /// <paramref name="slackSeconds"/> has to cover what the picture side keeps beyond the
+    /// window: a save picks whole segments, so a clip can start up to one segment earlier
+    /// than asked, and sound that does not reach back that far leaves its opening silent.
     /// </summary>
-    public void Configure(WaveFormat? format, int seconds)
+    public void Configure(WaveFormat? format, int seconds, int slackSeconds)
     {
         lock (_lock)
         {
             int channels = format is null ? 0 : Math.Min(2, Math.Max(1, format.Channels));
-            int rate = format?.SampleRate ?? 0;
-            seconds = Math.Max(1, seconds) + 2;   // the same slack the segment ring keeps
+            // Held at a rate the AAC encoder takes, so a save never has to convert.
+            int rate = format is null ? 0 : PcmResampler.AacRate(format.SampleRate);
+            seconds = Math.Max(1, seconds) + Math.Max(2, slackSeconds);
 
             if (channels == 0 || rate == 0)
             {
@@ -63,6 +69,7 @@ internal sealed class ReplayAudioRing
     {
         SampleRate = rate;
         Channels = channels;
+        _resampler = channels > 0 ? new PcmResampler(channels) : null;
         _pcm = capacity > 0 ? new byte[capacity] : Array.Empty<byte>();
         // One mark per captured packet, sized by time rather than by byte count: a low sample
         // rate makes the buffer small without making the packets any less frequent, so sizing
@@ -95,7 +102,9 @@ internal sealed class ReplayAudioRing
             if (_scratch.Length < maxBytes) _scratch = new byte[maxBytes * 2];
 
             int frames = PcmConvert.ToPcm16(buffer, count, format, Channels, _scratch);
-            int bytes = frames * Channels * 2;
+            if (frames <= 0 || _resampler is null) return;
+            var (pcm, outFrames) = _resampler.Process(_scratch, frames, format.SampleRate, SampleRate);
+            int bytes = outFrames * Channels * 2;
             if (bytes <= 0) return;
             if (bytes >= _pcm.Length) return;   // an absurd packet; dropping beats wrapping
 
@@ -103,8 +112,8 @@ internal sealed class ReplayAudioRing
 
             int at = (int)(_written % _pcm.Length);
             int first = Math.Min(bytes, _pcm.Length - at);
-            Array.Copy(_scratch, 0, _pcm, at, first);
-            if (bytes > first) Array.Copy(_scratch, first, _pcm, 0, bytes - first);
+            Array.Copy(pcm, 0, _pcm, at, first);
+            if (bytes > first) Array.Copy(pcm, first, _pcm, 0, bytes - first);
             _written += bytes;
 
             DropMarksBefore(_written - _pcm.Length);

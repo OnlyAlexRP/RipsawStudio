@@ -4,9 +4,8 @@ namespace RipsawStudio.UI;
 
 internal enum Icon
 {
-    None, Monitor, Record, Gear, Info, Image, Speaker, Sliders,
-    Sun, Contrast, Droplet, Refresh, Download, Stopwatch, Folder,
-    Camera, Stop, Play, Chip, Keyboard, Mic, Rewind, Profile, Trash,
+    None, Monitor, Record, Gear, Info, Refresh, Download, Stopwatch, Folder,
+    Camera, Stop, Play, Chip, Keyboard, Rewind, Trash,
 }
 
 /// <summary>
@@ -57,74 +56,6 @@ internal static class Icons
                 g.DrawEllipse(pen, r.X, r.Y, r.Width, r.Height);
                 g.FillEllipse(brush, r.X + r.Width * 0.44f, r.Y + r.Height * 0.22f, r.Width * 0.13f, r.Height * 0.13f);
                 g.DrawLine(pen, r.X + r.Width * 0.5f, r.Y + r.Height * 0.45f, r.X + r.Width * 0.5f, r.Y + r.Height * 0.75f);
-                break;
-
-            case Icon.Image:
-                g.DrawRectangle(pen, r.X, r.Y, r.Width, r.Height);
-                g.DrawEllipse(pen, r.X + r.Width * 0.18f, r.Y + r.Height * 0.18f, r.Width * 0.2f, r.Height * 0.2f);
-                g.DrawLines(pen, new[]
-                {
-                    new PointF(r.X + r.Width * 0.08f, r.Bottom - r.Height * 0.18f),
-                    new PointF(r.X + r.Width * 0.4f, r.Y + r.Height * 0.5f),
-                    new PointF(r.Right - r.Width * 0.06f, r.Bottom - r.Height * 0.12f),
-                });
-                break;
-
-            case Icon.Speaker:
-                g.DrawLines(pen, new[]
-                {
-                    new PointF(r.X + r.Width * 0.06f, r.Y + r.Height * 0.35f),
-                    new PointF(r.X + r.Width * 0.26f, r.Y + r.Height * 0.35f),
-                    new PointF(r.X + r.Width * 0.5f, r.Y + r.Height * 0.1f),
-                    new PointF(r.X + r.Width * 0.5f, r.Bottom - r.Height * 0.1f),
-                    new PointF(r.X + r.Width * 0.26f, r.Y + r.Height * 0.65f),
-                    new PointF(r.X + r.Width * 0.06f, r.Y + r.Height * 0.65f),
-                });
-                g.DrawArc(pen, r.X + r.Width * 0.44f, r.Y + r.Height * 0.2f, r.Width * 0.5f, r.Height * 0.6f, -60, 120);
-                break;
-
-            case Icon.Sliders:
-                for (int i = 0; i < 3; i++)
-                {
-                    float y = r.Y + r.Height * (0.18f + i * 0.32f);
-                    g.DrawLine(pen, r.X, y, r.Right, y);
-                    float knob = r.X + r.Width * (i == 1 ? 0.68f : 0.34f);
-                    g.FillEllipse(brush, knob - 2f, y - 2f, 4f, 4f);
-                }
-                break;
-
-            case Icon.Sun:
-            {
-                float cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
-                g.DrawEllipse(pen, cx - r.Width * 0.22f, cy - r.Width * 0.22f, r.Width * 0.44f, r.Width * 0.44f);
-                for (int i = 0; i < 8; i++)
-                {
-                    double a = i * Math.PI / 4;
-                    g.DrawLine(pen,
-                        cx + (float)Math.Cos(a) * r.Width * 0.34f, cy + (float)Math.Sin(a) * r.Width * 0.34f,
-                        cx + (float)Math.Cos(a) * r.Width * 0.48f, cy + (float)Math.Sin(a) * r.Width * 0.48f);
-                }
-                break;
-            }
-
-            case Icon.Contrast:
-                g.DrawEllipse(pen, r.X, r.Y, r.Width, r.Height);
-                using (var path = new GraphicsPath())
-                {
-                    path.AddArc(r.X, r.Y, r.Width, r.Height, -90, 180);
-                    path.CloseFigure();
-                    g.FillPath(brush, path);
-                }
-                break;
-
-            case Icon.Droplet:
-                using (var path = new GraphicsPath())
-                {
-                    path.AddLine(r.X + r.Width * 0.5f, r.Y, r.Right, r.Y + r.Height * 0.62f);
-                    path.AddArc(r.X, r.Y + r.Height * 0.24f, r.Width, r.Height * 0.76f, 0, 180);
-                    path.CloseFigure();
-                    g.DrawPath(pen, path);
-                }
                 break;
 
             case Icon.Refresh:
@@ -217,19 +148,6 @@ internal static class Icons
                                 r.X + r.Width * 0.7f, r.Y + r.Height * 0.62f);
                 break;
 
-            case Icon.Mic:
-                using (var path = new GraphicsPath())
-                {
-                    var capsule = new RectangleF(r.X + r.Width * 0.3f, r.Y, r.Width * 0.4f, r.Height * 0.58f);
-                    path.AddArc(capsule.X, capsule.Y, capsule.Width, capsule.Width, 180, 180);
-                    path.AddArc(capsule.X, capsule.Bottom - capsule.Width, capsule.Width, capsule.Width, 0, 180);
-                    path.CloseFigure();
-                    g.DrawPath(pen, path);
-                }
-                g.DrawArc(pen, r.X + r.Width * 0.14f, r.Y + r.Height * 0.3f, r.Width * 0.72f, r.Height * 0.6f, 20, 140);
-                g.DrawLine(pen, r.X + r.Width * 0.5f, r.Y + r.Height * 0.82f, r.X + r.Width * 0.5f, r.Bottom);
-                break;
-
             case Icon.Rewind:
                 // Two arrowheads pointing back, over a bar: rewind, not just "play backwards".
                 g.FillPolygon(brush, new[]
@@ -246,11 +164,6 @@ internal static class Icons
                 });
                 g.DrawLine(pen, r.X + r.Width * 0.08f, r.Y + r.Height * 0.16f,
                                 r.X + r.Width * 0.08f, r.Bottom - r.Height * 0.16f);
-                break;
-
-            case Icon.Profile:
-                g.DrawEllipse(pen, r.X + r.Width * 0.28f, r.Y + r.Height * 0.06f, r.Width * 0.44f, r.Height * 0.44f);
-                g.DrawArc(pen, r.X + r.Width * 0.08f, r.Y + r.Height * 0.56f, r.Width * 0.84f, r.Height * 0.8f, 180, 180);
                 break;
 
             case Icon.Trash:

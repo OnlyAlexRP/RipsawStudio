@@ -88,6 +88,26 @@ internal static class PcmConvert
         frames = Math.Min(frames, destination.Length / (outChannels * 2));
         int bytesPerSample = format.BitsPerSample / 8;
 
+        // Surround folded to stereo with the usual ITU weights. Taking only the front pair, as
+        // a plain channel copy does, drops the centre channel - which is where dialogue lives.
+        // WAVE order is FL FR FC LFE BL BR SL SR; the LFE is left out, as every downmix does.
+        if (srcChannels > 2 && outChannels == 2)
+        {
+            const float Side = 0.7071f;
+            for (int f = 0; f < frames; f++)
+            {
+                int frameStart = f * srcFrameBytes;
+                float Read(int ch) => ch < srcChannels
+                    ? ReadSample(source, frameStart + ch * bytesPerSample, format) : 0f;
+                float centre = Read(2) * Side;
+                float left = Read(0) + centre + (Read(4) + Read(6)) * Side;
+                float right = Read(1) + centre + (Read(5) + Read(7)) * Side;
+                WritePcm16(destination, f * 4, left);
+                WritePcm16(destination, f * 4 + 2, right);
+            }
+            return frames;
+        }
+
         for (int f = 0; f < frames; f++)
         {
             int frameStart = f * srcFrameBytes;
@@ -102,6 +122,13 @@ internal static class PcmConvert
             }
         }
         return frames;
+    }
+
+    private static void WritePcm16(byte[] destination, int at, float value)
+    {
+        short s = (short)Math.Clamp(value * 32767f, -32768f, 32767f);
+        destination[at] = (byte)(s & 0xFF);
+        destination[at + 1] = (byte)((s >> 8) & 0xFF);
     }
 
     public static bool IsFloat(WaveFormat format) =>
@@ -142,19 +169,12 @@ internal sealed class MicInput : IDisposable
     private float _peak;
     private long _lastDataTicks;
 
-    public string DeviceId { get; }
     public bool IsRunning { get; private set; }
     public float Gain { get; set; } = 1f;
     public bool Muted { get; set; }
 
     /// <summary>Reads zero once packets stop, so a stuck meter cannot look like a live mic.</summary>
     public float PeakLevel => !IsRunning || Environment.TickCount64 - _lastDataTicks > 250 ? 0f : _peak;
-
-    /// <summary>Milliseconds of mic audio waiting to be mixed - the mic's share of the delay.</summary>
-    public double BufferedMs
-    {
-        get { lock (_lock) return _fill / (double)_channels / _sampleRate * 1000.0; }
-    }
 
     public event EventHandler<string>? Status;
 
@@ -164,29 +184,36 @@ internal sealed class MicInput : IDisposable
     /// </summary>
     public MicInput(string deviceId, int sampleRate, int channels, int latencyMs, int delayMs)
     {
-        DeviceId = deviceId;
         _sampleRate = sampleRate;
         _channels = Math.Max(1, channels);
 
         // Two seconds of headroom, so a stall in the game-audio callback cannot wrap the ring.
         _ring = new float[Math.Max(_sampleRate * _channels * 2, 8192)];
 
-        using var enumerator = new MMDeviceEnumerator();
-        _device = enumerator.GetDevice(deviceId)
-            ?? throw new InvalidOperationException("That microphone no longer exists.");
-
-        _capture = new WasapiCapture(_device, true, Math.Max(5, latencyMs / 2));
-        _sourceFormat = _capture.WaveFormat;
-        _capture.DataAvailable += OnDataAvailable;
-        _capture.RecordingStopped += OnRecordingStopped;
-
         int priming = Math.Clamp(delayMs, 0, 1000) * _sampleRate / 1000 * _channels;
         if (priming > 0) WriteRing(new float[priming], priming);
 
-        _capture.StartRecording();
+        // A mic that will not open is retried on every audio restart, so a half-opened one
+        // has to give its endpoint back here rather than wait for the GC.
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            _device = enumerator.GetDevice(deviceId)
+                ?? throw new InvalidOperationException("That microphone no longer exists.");
+
+            _capture = new WasapiCapture(_device, true, Math.Max(5, latencyMs / 2));
+            _sourceFormat = _capture.WaveFormat;
+            _capture.DataAvailable += OnDataAvailable;
+            _capture.RecordingStopped += OnRecordingStopped;
+            _capture.StartRecording();
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
         _lastDataTicks = Environment.TickCount64;
         IsRunning = true;
-        Status?.Invoke(this, $"Microphone: {_sourceFormat.SampleRate / 1000.0:0.#} kHz, {_sourceFormat.Channels} ch");
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)

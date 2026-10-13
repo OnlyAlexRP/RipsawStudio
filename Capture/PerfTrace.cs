@@ -83,7 +83,7 @@ internal sealed class PerfTrace
         double seconds = (_endTicks - _startTicks) / (double)TimeSpan.TicksPerSecond;
         var sb = new StringBuilder();
 
-        sb.AppendLine($"Ripsaw Studio performance trace - {seconds:0.0} s");
+        sb.AppendLine($"Ripsaw Studio performance trace ({seconds:0.0} s)");
         sb.AppendLine("================================================");
         sb.AppendLine($"Written        {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine($"Source         {context.Width}x{context.Height} {context.Format} @ {context.SourceFps:0.##} Hz");
@@ -123,10 +123,10 @@ internal sealed class PerfTrace
 
     private static string Describe(TraceContext context)
     {
-        if (context.Recording && context.ReplayArmed) return "recording AND replay buffer - two on top of the preview";
+        if (context.Recording && context.ReplayArmed) return "recording AND replay buffer, two on top of the preview";
         if (context.Recording) return "recording";
         if (context.ReplayArmed) return "replay buffer armed";
-        return "none - preview only";
+        return "none, preview only";
     }
 
     private void AppendVerdict(StringBuilder sb, TraceContext context, double seconds, long dropped)
@@ -146,13 +146,13 @@ internal sealed class PerfTrace
             sb.AppendLine($"* The card is delivering {capturedPerSecond:0.0} /s against a mode of {context.SourceFps:0.##} Hz.");
 
         if (shownPerSecond < capturedPerSecond * 0.9)
-            sb.AppendLine($"* Only {shownPerSecond:0.0} of {capturedPerSecond:0.0} frames a second reach the screen - " +
+            sb.AppendLine($"* Only {shownPerSecond:0.0} of {capturedPerSecond:0.0} frames a second reach the screen: " +
                           "the display side is the bottleneck, not the card.");
 
         double expectedInterval = context.DisplayHz > 0 ? 1000.0 / context.DisplayHz : 16.67;
         if (shownIntervals.Length > 0 && Percentile(shownIntervals, 0.5) > expectedInterval * 1.5)
             sb.AppendLine($"* Frames reach the screen every {Percentile(shownIntervals, 0.5):0.0} ms against a " +
-                          $"{expectedInterval:0.0} ms refresh - a refresh is being missed regularly.");
+                          $"{expectedInterval:0.0} ms refresh, so a refresh is being missed regularly.");
 
         if (lag.Length > 0)
         {
@@ -183,7 +183,7 @@ internal sealed class PerfTrace
                           $"refresh ({expectedInterval:0.0} ms) of delay that arrives after Present returns, " +
                           "so it is not counted in the lag figure above.");
             if (median >= 2)
-                sb.AppendLine("  That is more queueing than intended - real delay is higher than lag suggests.");
+                sb.AppendLine("  That is more queueing than intended: real delay is higher than lag suggests.");
         }
 
         if (dropped > seconds * 5)

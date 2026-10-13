@@ -62,9 +62,18 @@ internal sealed class VideoSource : IDisposable
                 MfHelpers.Release(mediaSource);
                 throw new MfException(hr, "MFCreateSourceReaderFromMediaSource");
             }
-            reader.SetStreamSelection(Mf.ALL_STREAMS, false);
-            reader.SetStreamSelection(Mf.FIRST_VIDEO_STREAM, true);
-            return new VideoSource(mediaSource, reader, dxgiManager is not null);
+            var source = new VideoSource(mediaSource, reader, dxgiManager is not null);
+            try
+            {
+                reader.SetStreamSelection(Mf.ALL_STREAMS, false);
+                reader.SetStreamSelection(Mf.FIRST_VIDEO_STREAM, true);
+            }
+            catch
+            {
+                source.Dispose();
+                throw;
+            }
+            return source;
         }
         finally { MfHelpers.Release(readerAttrs); }
     }

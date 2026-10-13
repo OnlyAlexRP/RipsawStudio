@@ -35,7 +35,6 @@ internal sealed class DeblockPass : IDisposable
 
     private ID3D11Texture2D? _scratch;
     private ID3D11ShaderResourceView? _scratchSrv;
-    private ID3D11RenderTargetView? _scratchRtv;
     private int _width, _height;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -142,18 +141,16 @@ float4 PSMain(VSOut input) : SV_TARGET
     /// The render target the video processor should blit into instead of the swap chain's
     /// back buffer. Recreated only when the size actually changes (window resize).
     /// </summary>
-    public ID3D11RenderTargetView GetSourceTarget(int width, int height, out ID3D11Texture2D texture)
+    public ID3D11Texture2D GetSourceTarget(int width, int height)
     {
         EnsureScratch(width, height);
-        texture = _scratch!;
-        return _scratchRtv!;
+        return _scratch!;
     }
 
     private void EnsureScratch(int width, int height)
     {
         if (_scratch is not null && _width == width && _height == height) return;
 
-        _scratchRtv?.Dispose();
         _scratchSrv?.Dispose();
         _scratch?.Dispose();
 
@@ -168,7 +165,6 @@ float4 PSMain(VSOut input) : SV_TARGET
             Usage = ResourceUsage.Default,
             BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
         });
-        _scratchRtv = _device.CreateRenderTargetView(_scratch);
         _scratchSrv = _device.CreateShaderResourceView(_scratch);
         _width = width;
         _height = height;
@@ -211,7 +207,6 @@ float4 PSMain(VSOut input) : SV_TARGET
 
     public void Dispose()
     {
-        _scratchRtv?.Dispose();
         _scratchSrv?.Dispose();
         _scratch?.Dispose();
         _constants?.Dispose();
