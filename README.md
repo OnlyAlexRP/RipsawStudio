@@ -24,7 +24,7 @@ Windows 10 / 11
 
 With the use and assistance of Claude AI for code restructuring prior to publication and for optimization.
 
-\## If Windows 11 Smart App Control Blocking the Application
+## If Windows 11 Smart App Control Blocking the Application
 
 
 
