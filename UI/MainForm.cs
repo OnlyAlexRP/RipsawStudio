@@ -87,16 +87,12 @@ public sealed class MainForm : Form
         _video.Dock = DockStyle.Fill;
         _video.PlaceholderText = "Press Esc for the controls";
         Controls.Add(_video);
-        Controls.Add(_volumeOverlay);
-        Controls.Add(_toast);
-        Controls.Add(_stats);
-        Controls.Add(_recordLight);
-        Controls.Add(_captureToast);
 
-        // The backdrop and the panel are borderless owned windows rather than child controls,
-        // so they can fade with Form.Opacity over the swap chain.
+        // The backdrop, the panel and the overlays are borderless owned windows rather than
+        // child controls: over the swap chain a child control can only be an opaque rectangle.
         _panel.Owner = this;
         _scrim.Owner = this;
+        foreach (var overlay in Overlays) overlay.Owner = this;
         _scrim.Clicked += (_, _) => SetMenuOpen(false);
 
         _menuOpen = _settings.PanelOpen;
@@ -134,6 +130,8 @@ public sealed class MainForm : Form
         _video.MouseDoubleClick += (_, _) => ToggleFullscreen();
         _video.MouseDown += (_, _) => { if (_menuOpen) SetMenuOpen(false); };
     }
+
+    private Overlay[] Overlays => new Overlay[] { _volumeOverlay, _toast, _stats, _recordLight, _captureToast };
 
     /// <summary>
     /// Lets the panel and the backdrop - each its own top-level window - forward keystrokes
@@ -263,6 +261,7 @@ public sealed class MainForm : Form
         {
             TopMost = _settings.AlwaysOnTop;
             _scrim.TopMost = _panel.TopMost = _settings.AlwaysOnTop;
+            foreach (var overlay in Overlays) overlay.TopMost = _settings.AlwaysOnTop;
             _panel.BringToFront();
         }
         _stats.SetVisible(_settings.ShowStatusOverlay);
@@ -283,6 +282,8 @@ public sealed class MainForm : Form
         if (_shown) return;
         _shown = true;
         LayoutOverlays();
+        // Asked for in the constructor, before there was a window to float over.
+        _stats.SetVisible(_settings.ShowStatusOverlay);
         _engine.SetWindow(_video.Handle, _video.ClientSize.Width, _video.ClientSize.Height);
         // WinForms recreates handles for some property changes; the swap chain must follow.
         _video.HandleCreated += (_, _) =>
@@ -369,6 +370,7 @@ public sealed class MainForm : Form
         }
         _panel.Dispose();
         _scrim.Dispose();
+        foreach (var overlay in Overlays) overlay.Dispose();
     }
 
     private void Ui(Action action)
@@ -398,14 +400,12 @@ public sealed class MainForm : Form
         if (_builtWidth == 0) RebuildPanelIfNeeded();
         else if (_builtWidth != panelWidth) { _relayout.Stop(); _relayout.Start(); }
 
-        _captureToast.SetAnchor(new Point(16, 16));
-        _volumeOverlay.Location = new Point((w - _volumeOverlay.Width) / 2, h - _volumeOverlay.Height - 28);
-        _toast.SetBounds(16, h - _toast.Height - 16, Math.Clamp(w - 32, 160, 620), _toast.Height);
-        _stats.Location = new Point(w - _stats.Width - 16, 16);
-        _recordLight.Location = new Point(w - _recordLight.Width - 16, _settings.ShowStatusOverlay ? 16 + _stats.Height + 8 : 16);
-
-        foreach (Control overlay in new Control[] { _volumeOverlay, _toast, _stats, _recordLight, _captureToast })
-            if (overlay.Visible) overlay.BringToFront();
+        _captureToast.SetAnchor(PointToScreen(new Point(16, 16)));
+        _volumeOverlay.Location = PointToScreen(new Point((w - _volumeOverlay.Width) / 2, h - _volumeOverlay.Height - 28));
+        _toast.MaxWidth = Math.Clamp(w - 32, 160, 620);
+        _toast.Location = PointToScreen(new Point(16, h - _toast.Height - 16));
+        _stats.Location = PointToScreen(new Point(w - _stats.Width - 16, 16));
+        _recordLight.Location = PointToScreen(new Point(w - _recordLight.Width - 16, _settings.ShowStatusOverlay ? 16 + _stats.Height + 8 : 16));
     }
 
     private void RebuildPanelIfNeeded()

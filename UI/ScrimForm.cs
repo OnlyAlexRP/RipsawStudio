@@ -2,7 +2,7 @@ namespace RipsawStudio.UI;
 
 /// <summary>
 /// The dark backdrop behind the menu. Plain black, faded via <see cref="Form.Opacity"/> in
-/// lockstep with <see cref="BarForm"/> and the settings window; a click anywhere on it closes
+/// lockstep with the control window; a click anywhere on it closes
 /// the whole menu, mirroring the old "click the video to dismiss" gesture.
 /// </summary>
 internal sealed class ScrimForm : Form
