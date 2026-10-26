@@ -27,6 +27,24 @@ public static class UpdateChecker
     /// <summary>The build that is running, trimmed the same way the About page shows it.</summary>
     public static Version Current => typeof(UpdateChecker).Assembly.GetName().Version ?? new Version(0, 0);
 
+    /// <summary>
+    /// Installed from the Microsoft Store (an MSIX package). The Store installs the updates then,
+    /// and its rules do not allow pointing users at another download.
+    /// </summary>
+    public static bool IsStoreInstall { get; } = IsPackaged();
+
+    private static bool IsPackaged()
+    {
+        int length = 0;
+        try { return GetCurrentPackageFullName(ref length, null) != APPMODEL_ERROR_NO_PACKAGE; }
+        catch (EntryPointNotFoundException) { return false; }
+    }
+
+    private const int APPMODEL_ERROR_NO_PACKAGE = 15700;
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int GetCurrentPackageFullName(ref int length, System.Text.StringBuilder? name);
+
     public static async Task<UpdateCheckResult> CheckAsync()
     {
         try

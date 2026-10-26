@@ -72,6 +72,7 @@ public sealed class AppSettings
     public bool Muted { get; set; }
     /// <summary>Minutes between scheduled audio restarts; 0 disables them.</summary>
     public int AudioRestartMinutes { get; set; } = 30;
+    public bool RecordDesktopAudio { get; set; }
 
     // ---- microphone (yours, not the console's - so it is not part of a profile) --------
     public string? MicDeviceId { get; set; }
@@ -171,6 +172,12 @@ public sealed class AppSettings
     /// </summary>
     public bool GlobalShortcuts { get; set; }
 
+    /// <summary>"auto" follows Windows, otherwise a code from <see cref="Loc.Languages"/>.</summary>
+    public string Language { get; set; } = Loc.Auto;
+
+    /// <summary>Full paths of the captures starred on the Captures page.</summary>
+    public List<string> FavoriteCaptures { get; set; } = new();
+
     public static string SettingsPath => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RipsawStudio", "settings.json");
 
@@ -192,6 +199,7 @@ public sealed class AppSettings
         AudioLatencyMs = d.AudioLatencyMs;
         AudioExclusive = d.AudioExclusive;
         AudioRestartMinutes = d.AudioRestartMinutes;
+        RecordDesktopAudio = d.RecordDesktopAudio;
         Volume = d.Volume;
         Muted = d.Muted;
 
