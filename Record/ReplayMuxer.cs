@@ -100,7 +100,7 @@ internal static class ReplayMuxer
     public static string? Write(IReadOnlyList<ReplaySegment> segments, ReplayAudioTake? take,
                                 int audioOffsetMs, int audioBitrateKbps, string outputPath)
     {
-        if (segments.Count == 0) throw new InvalidOperationException("Nothing has been buffered yet.");
+        if (segments.Count == 0) throw new InvalidOperationException(Tr("Nothing has been buffered yet."));
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
         IMFSinkWriter? writer = null;

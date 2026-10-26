@@ -170,7 +170,7 @@ internal sealed class ReplayBuffer : IDisposable
             _openSeconds = 0;
         }
         _running = true;
-        Status?.Invoke(this, $"Instant replay armed, keeping the last {BufferSeconds} s");
+        Status?.Invoke(this, Tr("Instant replay armed, keeping the last {0} s", BufferSeconds));
     }
 
     public void Stop()
@@ -308,7 +308,7 @@ internal sealed class ReplayBuffer : IDisposable
                 // costs nothing but a few extra milliseconds of tail.
                 var take = _audio.Take(clipStartHns);
                 string? note = ReplayMuxer.Write(chosen, take, audioOffsetMs, audioBitrate, outputPath);
-                if (note is not null) Status?.Invoke(this, "Instant replay: " + note);
+                if (note is not null) Status?.Invoke(this, Tr("Instant replay: {0}", note));
                 completion.TrySetResult(outputPath);
             }
             catch (Exception ex) { completion.TrySetException(ex); }
@@ -467,7 +467,7 @@ internal sealed class ReplayBuffer : IDisposable
     {
         if (LastError is not null) return;
         LastError = ex.Message;
-        Status?.Invoke(this, "Instant replay stopped: " + ex.Message);
+        Status?.Invoke(this, Tr("Instant replay stopped: {0}", ex.Message));
         Stop();
     }
 
@@ -528,7 +528,7 @@ internal sealed class ReplayBuffer : IDisposable
             foreach (var job in _jobs.GetConsumingEnumerable())
             {
                 try { job(); }
-                catch (Exception ex) { Status?.Invoke(this, "Instant replay: " + ex.Message); }
+                catch (Exception ex) { Status?.Invoke(this, Tr("Instant replay: {0}", ex.Message)); }
             }
         }
         catch (ObjectDisposedException) { }
