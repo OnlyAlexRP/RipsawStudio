@@ -1,47 +1,40 @@
 using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
 
 namespace RipsawStudio.UI;
 
 /// <summary>
-/// The top edge of the control window: one icon per category on the left - the app's own
-/// artwork - and the record, replay and screenshot actions on the right, so they are one
-/// click away from any page.
+/// The top edge of the control window: one line icon per category with its name under it on
+/// the left, and the record, replay and screenshot actions on the right, so they are one click
+/// away from any page. Icons are drawn rather than loaded, so they stay sharp at any scale and
+/// take the same grey, white and orange as the rest of the panel.
 /// </summary>
 internal sealed class NavBar : Control
 {
-    private static readonly (Category Category, Image? Art, Icon Fallback)[] Items =
-    {
-        (Category.Capture, Assets.IconCapture, Icon.Monitor),
-        (Category.Recording, Assets.IconRecording, Icon.Record),
-        (Category.Keys, Assets.IconKeyboard, Icon.Keyboard),
-        (Category.Settings, Assets.IconGeneral, Icon.Gear),
-        (Category.About, Assets.IconAbout, Icon.Info),
-    };
+    private static readonly Category[] Items = Pages.Categories.Select(c => c.Category).ToArray();
 
-    // The artwork is 90x90 tiles drawn for a 599x104 bar on a 120px pitch; these keep the
-    // same proportions at the bar's height.
-    private const int IconSize = 52;
-    private const int Pitch = 66;
-    private const int LeftInset = 16;
+    private const int LeftInset = 12;
+    private const int MinItemWidth = 74;
+    private const int GlyphSize = 24;
+    private const int GlyphTop = 14;
+    private const int LabelTop = 45;
+    private const float HoverScale = 1.1f;
 
-    /// <summary>How much larger a hovered or active icon draws, relative to its resting size.</summary>
-    private const float HoverScale = 1.12f;
-    private const float ActiveScale = 1.08f;
-    /// <summary>Icons other than the open category are dimmed, so the open one reads at a glance.</summary>
-    private const float RestingAlpha = 0.5f;
-
+    /// <summary>0 at rest, 1 when lit (hovered or open), eased so the colours fade rather than snap.</summary>
+    private readonly float[] _light = new float[Items.Length];
     private readonly float[] _scale = new float[Items.Length];
-    private readonly float[] _alpha = new float[Items.Length];
+    private int[] _x = new int[Items.Length + 1];
     private int _hovered = -1;
     private Category _active = Category.Capture;
     private string _profile = "";
     private bool _recording;
+    private bool _saving;
+    /// <summary>Icons only, when the names would run into the buttons on the right.</summary>
+    private bool _compact;
     private readonly System.Windows.Forms.Timer _pulse = new() { Interval = 15 };
     private readonly ToolTip _tip = new();
 
-    public FlatButton Record { get; } = new() { ButtonRole = FlatButton.Role.Normal, Glyph = Icon.Record, Text = "Record" };
-    public FlatButton SaveReplay { get; } = new() { Glyph = Icon.Rewind, Text = "Save replay" };
+    public FlatButton Record { get; } = new() { ButtonRole = FlatButton.Role.Normal, Glyph = Icon.Record };
+    public FlatButton SaveReplay { get; } = new() { Glyph = Icon.Rewind };
     public FlatButton Snapshot { get; } = new() { Glyph = Icon.Camera, Text = "" };
     public FlatButton Close { get; } = new() { ButtonRole = FlatButton.Role.Ghost, Text = "✕" };
 
@@ -54,13 +47,21 @@ internal sealed class NavBar : Control
         BackColor = Theme.Rail;
         for (int i = 0; i < Items.Length; i++)
         {
-            _scale[i] = Items[i].Category == _active ? ActiveScale : 1f;
-            _alpha[i] = Items[i].Category == _active ? 1f : RestingAlpha;
+            _light[i] = Items[i] == _active ? 1f : 0f;
+            _scale[i] = 1f;
         }
         Controls.AddRange(new Control[] { Record, SaveReplay, Snapshot, Close });
-        _tip.SetToolTip(Snapshot, "Screenshot");
-        _tip.SetToolTip(Close, "Close (Esc)");
         _pulse.Tick += (_, _) => Animate();
+        ApplyTexts();
+    }
+
+    public void ApplyTexts()
+    {
+        _tip.SetToolTip(Snapshot, Tr("Screenshot"));
+        _tip.SetToolTip(Close, Tr("Close (Esc)"));
+        SaveReplay.Text = _saving ? Tr("Saving...") : Tr("Save replay");
+        if (!_recording) Record.Text = Tr("Record");
+        LayoutButtons();
     }
 
     public Category Active
@@ -90,14 +91,17 @@ internal sealed class NavBar : Control
             Record.Glyph = recording ? Icon.Stop : Icon.Record;
             LayoutButtons();
         }
-        Record.Text = recording ? $"Stop  {elapsed:hh\\:mm\\:ss}" : "Record";
+        Record.Text = recording ? Tr("Stop") + $"  {elapsed:hh\\:mm\\:ss}" : Tr("Record");
         Record.Invalidate();
     }
 
     public void SetReplayAvailable(bool armed, bool saving)
     {
         SaveReplay.Enabled = armed && !saving;
-        SaveReplay.Text = saving ? "Saving..." : "Save replay";
+        if (_saving == saving) return;
+        _saving = saving;
+        SaveReplay.Text = saving ? Tr("Saving...") : Tr("Save replay");
+        LayoutButtons();
     }
 
     protected override void OnSizeChanged(EventArgs e)
@@ -106,6 +110,26 @@ internal sealed class NavBar : Control
         LayoutButtons();
     }
 
+    /// <summary>Each item is as wide as its name needs, so longer languages never clip.</summary>
+    private void LayoutItems()
+    {
+        _x = new int[Items.Length + 1];
+        _x[0] = LeftInset;
+        for (int i = 0; i < Items.Length; i++)
+        {
+            int label = TextRenderer.MeasureText(Label(i), Theme.Small, Size.Empty, TextFormatFlags.NoPadding).Width;
+            _x[i + 1] = _x[i] + Math.Max(MinItemWidth, label + 22);
+        }
+        _compact = _x[Items.Length] > Record.Left - 24;
+        if (_compact)
+            for (int i = 0; i < Items.Length; i++) _x[i + 1] = _x[i] + 56;
+        Invalidate();
+    }
+
+    private int GlyphY => _compact ? (Height - GlyphSize) / 2 : GlyphTop;
+
+    private static string Label(int index) => Tr(Pages.Categories[index].Label);
+
     private void LayoutButtons()
     {
         int h = 34, y = (Height - h) / 2, right = Width - 16;
@@ -113,35 +137,58 @@ internal sealed class NavBar : Control
         right -= 34 + 14;
         Snapshot.SetBounds(right - 40, y, 40, h);
         right -= 40 + 8;
-        SaveReplay.SetBounds(right - 124, y, 124, h);
-        right -= 124 + 8;
-        int recordWidth = _recording ? 136 : 104;
+        // Sized to the words, which are longer in some languages; the recording timer is
+        // measured at its widest so the button does not twitch every second.
+        int replayWidth = Math.Max(124, ButtonWidth(SaveReplay, SaveReplay.Text));
+        SaveReplay.SetBounds(right - replayWidth, y, replayWidth, h);
+        right -= replayWidth + 8;
+        int recordWidth = Math.Max(_recording ? 136 : 104,
+            ButtonWidth(Record, _recording ? Tr("Stop") + "  00:00:00" : Tr("Record")));
         Record.SetBounds(right - recordWidth, y, recordWidth, h);
-        Invalidate();
+        LayoutItems();
     }
 
-    private Rectangle IconBounds(int index) =>
-        new(LeftInset + index * Pitch, (Height - IconSize) / 2 - 2, IconSize, IconSize);
+    private static int ButtonWidth(FlatButton button, string text) =>
+        TextRenderer.MeasureText(text, button.Font).Width + 52;
+
+    private Rectangle ItemBounds(int index) => new(_x[index], 0, _x[index + 1] - _x[index], Height - 1);
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.Clear(Theme.Rail);
         using (var line = new Pen(Theme.Line))
             g.DrawLine(line, 0, Height - 1, Width, Height - 1);
 
         for (int i = 0; i < Items.Length; i++)
         {
-            var slot = IconBounds(i);
-            int size = (int)Math.Round((IconSize - 3) * _scale[i]);
-            var rect = new Rectangle(slot.X + (slot.Width - size) / 2, slot.Y + (slot.Height - size) / 2, size, size);
-            DrawIcon(g, Items[i], rect, _alpha[i]);
+            var slot = ItemBounds(i);
+            bool active = Items[i] == _active;
+            Color ink = Blend(Theme.TextDim, Theme.Text, _light[i]);
+            Color glyph = active ? Theme.Accent : ink;
 
-            if (Items[i].Category == _active)
+            // A soft plate under the open category, in the accent at low strength.
+            if (active)
             {
-                var mark = new Rectangle(slot.X + slot.Width / 2 - 10, Height - 7, 20, 3);
+                var plate = new Rectangle(slot.X + slot.Width / 2 - 20, GlyphY - 7, 40, GlyphSize + 14);
+                using var path = FlatButton.Rounded(plate, 9);
+                using var fill = new SolidBrush(Color.FromArgb(38, Theme.Accent));
+                g.FillPath(fill, path);
+            }
+
+            float size = GlyphSize * _scale[i];
+            var box = new RectangleF(slot.X + (slot.Width - size) / 2f, GlyphY + (GlyphSize - size) / 2f, size, size);
+            DrawGlyph(g, Items[i], box, glyph);
+
+            if (!_compact)
+                TextRenderer.DrawText(g, Label(i), Theme.Small, new Rectangle(slot.X, LabelTop, slot.Width, 18),
+                active ? Theme.Text : ink,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+
+            if (active)
+            {
+                var mark = new Rectangle(slot.X + slot.Width / 2 - 12, Height - 4, 24, 3);
                 using var path = FlatButton.Rounded(mark, 1);
                 using var fill = new SolidBrush(Theme.Accent);
                 g.FillPath(fill, path);
@@ -150,7 +197,7 @@ internal sealed class NavBar : Control
 
         if (_profile.Length > 0)
         {
-            int left = IconBounds(Items.Length - 1).Right + 24;
+            int left = _x[Items.Length] + 20;
             int room = Record.Left - 16 - left;
             if (room > 80)
                 TextRenderer.DrawText(g, _profile, Theme.Small, new Rectangle(left, 0, room, Height), Theme.TextFaint,
@@ -158,21 +205,91 @@ internal sealed class NavBar : Control
         }
     }
 
-    private static void DrawIcon(Graphics g, (Category Category, Image? Art, Icon Fallback) item, Rectangle rect, float alpha)
+    private static Color Blend(Color a, Color b, float t) => Color.FromArgb(
+        (int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+
+    /// <summary>The category icons, as 2 px line drawings on a 24 px grid.</summary>
+    private static void DrawGlyph(Graphics g, Category category, RectangleF r, Color colour)
     {
-        if (item.Art is { } art)
+        float u = r.Width / 24f;
+        PointF P(float x, float y) => new(r.X + x * u, r.Y + y * u);
+        RectangleF R(float x, float y, float w, float h) => new(r.X + x * u, r.Y + y * u, w * u, h * u);
+
+        using var pen = new Pen(colour, 2f * u) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var brush = new SolidBrush(colour);
+
+        switch (category)
         {
-            using var attributes = new ImageAttributes();
-            attributes.SetColorMatrix(new ColorMatrix { Matrix33 = alpha });
-            g.DrawImage(art, rect, 0, 0, art.Width, art.Height, GraphicsUnit.Pixel, attributes);
-            return;
+            case Category.Capture:
+                // A screen with a live signal on it.
+                using (var screen = RoundedF(R(2, 3.5f, 20, 13.5f), 2.5f * u)) g.DrawPath(pen, screen);
+                g.DrawLine(pen, P(8, 21), P(16, 21));
+                g.DrawLine(pen, P(12, 17), P(12, 21));
+                g.DrawLines(pen, new[] { P(6, 12.5f), P(9, 9.5f), P(11.5f, 11.5f), P(14.5f, 7.5f), P(18, 11) });
+                break;
+
+            case Category.Recording:
+                g.DrawEllipse(pen, R(2.5f, 2.5f, 19, 19));
+                g.FillEllipse(brush, R(7.5f, 7.5f, 9, 9));
+                break;
+
+            case Category.Library:
+                // A frame behind a frame, with a play mark: a stack of clips.
+                using (var back = new GraphicsPath())
+                {
+                    back.AddLines(new[] { P(7, 5.5f), P(7, 4.5f) });
+                    back.AddArc(R(7, 2.5f, 4, 4), 180, 90);
+                    back.AddLine(P(9, 2.5f), P(20, 2.5f));
+                    back.AddArc(R(18, 2.5f, 4, 4), 270, 90);
+                    back.AddLine(P(22, 4.5f), P(22, 14));
+                    back.AddArc(R(18, 12, 4, 4), 0, 90);
+                    back.AddLine(P(20, 16), P(19, 16));
+                    g.DrawPath(pen, back);
+                }
+                using (var front = RoundedF(R(2, 8, 15, 13.5f), 2.5f * u)) g.DrawPath(pen, front);
+                g.FillPolygon(brush, new[] { P(7.8f, 11.6f), P(7.8f, 17.9f), P(12.6f, 14.75f) });
+                break;
+
+            case Category.Keys:
+                using (var board = RoundedF(R(1.5f, 5.5f, 21, 13), 2.5f * u)) g.DrawPath(pen, board);
+                foreach (float x in new[] { 6f, 10f, 14f, 18f })
+                    g.FillEllipse(brush, R(x - 1.1f, 9 - 1.1f, 2.2f, 2.2f));
+                g.DrawLine(pen, P(8, 14.5f), P(16, 14.5f));
+                break;
+
+            case Category.Settings:
+            {
+                // Eight teeth around a ring, as one outline.
+                var points = new List<PointF>();
+                for (int t = 0; t < 8; t++)
+                {
+                    double a = t * Math.PI / 4;
+                    foreach (var (da, radius) in new[] { (-0.42, 7.2), (-0.2, 10.2), (0.2, 10.2), (0.42, 7.2) })
+                        points.Add(P(12 + (float)(Math.Cos(a + da) * radius), 12 + (float)(Math.Sin(a + da) * radius)));
+                }
+                g.DrawPolygon(pen, points.ToArray());
+                g.DrawEllipse(pen, R(8.75f, 8.75f, 6.5f, 6.5f));
+                break;
+            }
+
+            case Category.About:
+                g.DrawEllipse(pen, R(2.5f, 2.5f, 19, 19));
+                g.FillEllipse(brush, R(10.75f, 6.4f, 2.5f, 2.5f));
+                g.DrawLine(pen, P(12, 11), P(12, 17));
+                break;
         }
-        // No artwork embedded: a tile in the same spirit, so the bar still works.
-        using (var path = FlatButton.Rounded(Rectangle.Inflate(rect, -3, -3), 12))
-        using (var fill = new SolidBrush(Theme.Field))
-            g.FillPath(fill, path);
-        var glyph = Color.FromArgb((int)(255 * alpha), Theme.Accent);
-        Icons.Draw(g, item.Fallback, RectangleF.Inflate(rect, -rect.Width * 0.27f, -rect.Height * 0.27f), glyph, 2.2f);
+    }
+
+    private static GraphicsPath RoundedF(RectangleF r, float radius)
+    {
+        var path = new GraphicsPath();
+        float d = radius * 2;
+        path.AddArc(r.X, r.Y, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -182,7 +299,7 @@ internal sealed class NavBar : Control
         if (hit == _hovered) return;
         _hovered = hit;
         Cursor = hit >= 0 ? Cursors.Hand : Cursors.Default;
-        _tip.SetToolTip(this, hit >= 0 ? Pages.Categories[hit].Label : null);
+        _tip.SetToolTip(this, _compact && hit >= 0 ? Label(hit) : null);
         StartPulse();
     }
 
@@ -200,14 +317,14 @@ internal sealed class NavBar : Control
         base.OnMouseDown(e);
         int hit = HitTest(e.Location);
         if (hit < 0) return;
-        Active = Items[hit].Category;
-        CategorySelected?.Invoke(this, Items[hit].Category);
+        Active = Items[hit];
+        CategorySelected?.Invoke(this, Items[hit]);
     }
 
     private int HitTest(Point point)
     {
         for (int i = 0; i < Items.Length; i++)
-            if (IconBounds(i).Contains(point)) return i;
+            if (ItemBounds(i).Contains(point)) return i;
         return -1;
     }
 
@@ -216,18 +333,15 @@ internal sealed class NavBar : Control
         if (!_pulse.Enabled) _pulse.Start();
     }
 
-    /// <summary>Eases every icon toward its target size and brightness, stopping itself once
-    /// settled so a resting bar costs nothing.</summary>
+    /// <summary>Eases every item toward its target, stopping once settled so a resting bar costs nothing.</summary>
     private void Animate()
     {
         bool moving = false;
         for (int i = 0; i < Items.Length; i++)
         {
-            bool active = Items[i].Category == _active;
-            float scale = i == _hovered ? HoverScale : active ? ActiveScale : 1f;
-            float alpha = active || i == _hovered ? 1f : RestingAlpha;
-            moving |= Ease(ref _scale[i], scale);
-            moving |= Ease(ref _alpha[i], alpha);
+            bool lit = Items[i] == _active || i == _hovered;
+            moving |= Ease(ref _light[i], lit ? 1f : 0f);
+            moving |= Ease(ref _scale[i], i == _hovered ? HoverScale : 1f);
         }
         Invalidate();
         if (!moving) _pulse.Stop();
@@ -363,9 +477,9 @@ internal sealed class SignalStrip : Control
         };
         string word = _recording ? "REC" : _state switch
         {
-            State.Live => "ON",
-            State.NoSignal => "NO SIGNAL",
-            _ => "OFF",
+            State.Live => Tr("ON"),
+            State.NoSignal => Tr("NO SIGNAL"),
+            _ => Tr("OFF"),
         };
         parts.Add((word, Theme.ReadoutSmall, lamp, 22, 0));
         if (_state != State.Stopped && _resolution.Length > 0)
@@ -379,7 +493,7 @@ internal sealed class SignalStrip : Control
             if (_lag.Length > 0)
             {
                 parts.Add((_lag, Theme.Readout, Theme.Text, 4, 0));
-                parts.Add(("ms lag", Theme.ReadoutSmall, Theme.TextDim, 18, 2));
+                parts.Add((Tr("ms lag"), Theme.ReadoutSmall, Theme.TextDim, 18, 2));
             }
         }
 

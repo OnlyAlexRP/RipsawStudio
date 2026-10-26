@@ -50,14 +50,15 @@ internal sealed class ControlPanel : Form
     private readonly FlatCombo _audioOut = new();
     private readonly FlatCombo _micDevice = new();
     private readonly FlatCombo _encoder = new();
+    private readonly FlatCombo _language = new();
 
-    private readonly Segmented _aspect = new() { Items = new[] { "Auto", "16:9", "4:3", "16:10" } };
-    private readonly Segmented _scaling = new() { Items = new[] { "Fit", "Stretch", "1:1 pixels" } };
-    private readonly Segmented _range = new() { Items = new[] { "Auto", "Expand", "Compress" } };
-    private readonly Segmented _matrix = new() { Items = new[] { "Auto", "BT.601", "BT.709" } };
+    private readonly Segmented _aspect = new();
+    private readonly Segmented _scaling = new();
+    private readonly Segmented _range = new();
+    private readonly Segmented _matrix = new();
     private readonly Segmented _codec = new() { Items = new[] { "H.264", "HEVC" } };
-    private readonly Segmented _container = new() { Items = new[] { "Fragmented MP4", "MP4" } };
-    private readonly Segmented _rate = new() { Items = new[] { "Constant", "Variable", "Quality" } };
+    private readonly Segmented _container = new();
+    private readonly Segmented _rate = new();
 
     private readonly Slider _brightness = new() { Bipolar = true, Minimum = -100, Maximum = 100 };
     private readonly Slider _contrast = new() { Minimum = 0, Maximum = 200 };
@@ -87,22 +88,22 @@ internal sealed class ControlPanel : Form
     private readonly PathField _replayFolder = new();
     private readonly PathField _screenshotsFolder = new();
 
-    private readonly FlatCheck _vsync = new() { Text = "Wait for vsync" };
-    private readonly FlatCheck _passthrough = new() { Text = "Play the game sound through the output" };
-    private readonly FlatCheck _exclusive = new() { Text = "Exclusive output, for the lowest delay" };
-    private readonly FlatCheck _onTop = new() { Text = "Keep the window on top" };
-    private readonly FlatCheck _autoStart = new() { Text = "Start the preview when the app opens" };
-    private readonly FlatCheck _showStats = new() { Text = "Show live stats over the picture" };
-    private readonly FlatCheck _micEnabled = new() { Text = "Mix a microphone into recordings and replays" };
-    private readonly FlatCheck _micMuted = new() { Text = "Mute the microphone" };
-    private readonly FlatCheck _micMonitor = new() { Text = "Hear yourself in the monitor" };
-    private readonly FlatCheck _micDucking = new() { Text = "Lower the game while you talk" };
-    private readonly FlatCheck _replayEnabled = new() { Text = "Keep the last moments ready to save" };
-    private readonly FlatCheck _globalKeys = new() { Text = "Capture keys work while a game has focus" };
+    private readonly FlatCheck _vsync = new();
+    private readonly FlatCheck _passthrough = new();
+    private readonly FlatCheck _desktopAudio = new();
+    private readonly FlatCheck _exclusive = new();
+    private readonly FlatCheck _onTop = new();
+    private readonly FlatCheck _autoStart = new();
+    private readonly FlatCheck _showStats = new();
+    private readonly FlatCheck _micEnabled = new();
+    private readonly FlatCheck _micMuted = new();
+    private readonly FlatCheck _micMonitor = new();
+    private readonly FlatCheck _micDucking = new();
+    private readonly FlatCheck _replayEnabled = new();
+    private readonly FlatCheck _globalKeys = new();
 
-    private readonly FlatButton _startStop = new() { ButtonRole = FlatButton.Role.Accent, Glyph = UiIcon.Play, Text = "Start preview" };
-    private readonly FlatButton _rescan = new() { Glyph = UiIcon.Refresh, Text = "Rescan devices" };
-    private readonly FlatButton _saveReplay = new() { ButtonRole = FlatButton.Role.Accent, Glyph = UiIcon.Rewind, Text = "Save replay" };
+    private readonly FlatButton _startStop = new() { ButtonRole = FlatButton.Role.Accent, Glyph = UiIcon.Play };
+    private readonly FlatButton _rescan = new() { Glyph = UiIcon.Refresh };
     private readonly LevelMeter _meter = new();
     private readonly LevelMeter _micMeter = new();
     private readonly Label _liveStatus = new();
@@ -111,19 +112,27 @@ internal sealed class ControlPanel : Form
     private readonly Label _replayState = new();
     private readonly Label _encoderNote = new();
     private readonly Label _containerNote = new();
-    private readonly Label _updateStatus = new() { Text = "Checking for updates..." };
-    private readonly FlatButton _download = new() { ButtonRole = FlatButton.Role.Accent, Text = "Download update", Visible = false };
-    private readonly RecentList _recent = new() { Columns = 4, Rows = 3 };
+    private readonly Label _updateStatus = new();
+    private readonly FlatButton _download = new() { ButtonRole = FlatButton.Role.Accent, Visible = false };
+    private readonly LibraryView _library;
     private UpdateCheckResult? _lastUpdate;
+    private bool _streaming;
+    private bool _replaySaving;
+    private bool _replayArmed;
 
     private readonly Dictionary<(ShortcutAction, ShortcutSlot), KeyCaptureButton> _keyFields = new();
 
     private List<EncoderInfo> _encoders = new();
     private string? _previewAdapter;
 
-    public static readonly VideoDeviceInfo NoDevice = new("No capture card", "");
-    public static readonly AudioDeviceInfo NoMic = new("", "No microphone");
-    private const string AutoAdapter = "Automatic";
+    // Records, so a fresh copy still equals the one in the list.
+    private static VideoDeviceInfo NoDevice => new(Tr("No capture card"), "");
+    private static AudioDeviceInfo NoMic => new("", Tr("No microphone"));
+
+    private sealed record LanguageChoice(string Code, string Label)
+    {
+        public override string ToString() => Label;
+    }
 
     public event EventHandler? DeviceSelectionChanged;
     public event EventHandler? AudioSelectionChanged;
@@ -147,6 +156,7 @@ internal sealed class ControlPanel : Form
     public event EventHandler? SaveReplayClicked;
     public event EventHandler? CloseClicked;
     public event EventHandler? OpenFolderClicked;
+    public event EventHandler? LanguageChanged;
     /// <summary>A binding changed; the string is a note worth showing, or empty.</summary>
     public event EventHandler<string>? ShortcutsChanged;
     /// <summary>Anything at all that ends up in settings.json changed - the shell saves soon after.</summary>
@@ -165,6 +175,10 @@ internal sealed class ControlPanel : Form
     {
         _settings = settings;
         _shortcuts = shortcuts;
+        _library = new LibraryView(settings);
+        _library.SettingsTouched += (_, _) => SettingsTouched?.Invoke(this, EventArgs.Empty);
+        _library.OpenFolderClicked += (_, _) => OpenFolderClicked?.Invoke(this, EventArgs.Empty);
+        _library.ScrollChanged += (_, _) => { if (_page == Page.Library) UpdateScrollbar(); };
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -202,31 +216,74 @@ internal sealed class ControlPanel : Form
     /// <summary>Every control that survives a rebuild, so it can be detached before the old pages go.</summary>
     private IEnumerable<Control> Shared => new Control[]
     {
-        _profile, _device, _format, _adapter, _audioIn, _audioOut, _micDevice, _encoder,
+        _profile, _device, _format, _adapter, _audioIn, _audioOut, _micDevice, _encoder, _language,
         _aspect, _scaling, _range, _matrix, _codec, _container, _rate,
         _brightness, _contrast, _saturation, _smoothing, _volume, _micVolume, _quality,
         _brightnessValue, _contrastValue, _saturationValue, _smoothingValue, _volumeValue, _micVolumeValue, _qualityValue,
         _audioBuffer, _audioRestart, _videoBitrate, _audioBitrate, _audioOffset, _micOffset, _keyframe,
         _replayBuffer, _replaySave, _recordsFolder, _replayFolder, _screenshotsFolder,
-        _vsync, _passthrough, _exclusive, _onTop, _autoStart, _showStats, _micEnabled, _micMuted,
+        _vsync, _passthrough, _desktopAudio, _exclusive, _onTop, _autoStart, _showStats, _micEnabled, _micMuted,
         _micMonitor, _micDucking, _replayEnabled, _globalKeys,
-        _startStop, _rescan, _saveReplay, _meter, _micMeter,
-        _liveStatus, _statusLine, _recordState, _replayState, _encoderNote, _containerNote, _updateStatus, _download, _recent,
+        _startStop, _rescan, _meter, _micMeter,
+        _liveStatus, _statusLine, _recordState, _replayState, _encoderNote, _containerNote, _updateStatus, _download, _library,
     }.Concat(_keyFields.Values);
 
     private KeyCaptureButton NewKeyField(ShortcutAction action, ShortcutSlot slot)
     {
-        var field = new KeyCaptureButton { EmptyText = slot == ShortcutSlot.Primary ? "Not set" : "Add a key" };
+        var field = new KeyCaptureButton();
         field.Rebound += (_, keys) =>
         {
             var displaced = _shortcuts.Set(action, slot, keys);
             LoadShortcuts();
             ShortcutsChanged?.Invoke(this, displaced is null
                 ? ""
-                : $"{ShortcutCatalog.Describe(keys)} was on \"{ShortcutCatalog.Definition(displaced.Value).Label}\", it has been cleared there.");
+                : Tr("{0} was on \"{1}\", it has been cleared there.",
+                     ShortcutCatalog.Describe(keys), Tr(ShortcutCatalog.Definition(displaced.Value).Label)));
             SettingsTouched?.Invoke(this, EventArgs.Empty);
         };
         return field;
+    }
+
+    /// <summary>Labels of the controls that outlive a rebuild, in the current language.</summary>
+    private void ApplyTexts()
+    {
+        _aspect.Items = new[] { Tr("Auto"), "16:9", "4:3", "16:10" };
+        _scaling.Items = new[] { Tr("Fit"), Tr("Stretch"), Tr("1:1 pixels") };
+        _range.Items = new[] { Tr("Auto"), Tr("Expand"), Tr("Compress") };
+        _matrix.Items = new[] { Tr("Auto"), "BT.601", "BT.709" };
+        _container.Items = new[] { Tr("Fragmented MP4"), "MP4" };
+        _rate.Items = new[] { Tr("Constant"), Tr("Variable"), Tr("Quality") };
+
+        _vsync.Text = Tr("Wait for vsync");
+        _passthrough.Text = Tr("Play the game sound through the output");
+        _desktopAudio.Text = Tr("Record the PC sound instead of the game sound");
+        _exclusive.Text = Tr("Exclusive output, for the lowest delay");
+        _onTop.Text = Tr("Keep the window on top");
+        _autoStart.Text = Tr("Start the preview when the app opens");
+        _showStats.Text = Tr("Show live stats over the picture");
+        _micEnabled.Text = Tr("Mix a microphone into recordings and replays");
+        _micMuted.Text = Tr("Mute the microphone");
+        _micMonitor.Text = Tr("Hear yourself in the monitor");
+        _micDucking.Text = Tr("Lower the game while you talk");
+        _replayEnabled.Text = Tr("Keep the last moments ready to save");
+        _globalKeys.Text = Tr("Capture keys work while a game has focus");
+
+        _rescan.Text = Tr("Rescan devices");
+        _download.Text = Tr("Download update");
+        if (UpdateChecker.IsStoreInstall) _updateStatus.Text = Tr("Updates are installed by the Microsoft Store.");
+        else if (_lastUpdate is null) _updateStatus.Text = Tr("Checking for updates...");
+        foreach (var ((_, slot), field) in _keyFields)
+            field.EmptyText = slot == ShortcutSlot.Primary ? Tr("Not set") : Tr("Add a key");
+        SetStreaming(_streaming);
+        SetReplayState(_replayArmed, _replaySaving);
+        _nav.ApplyTexts();
+        _library.ApplyTexts();
+
+        _language.Items.Clear();
+        _language.Items.Add(new LanguageChoice(Loc.Auto, Tr("Automatic (Windows)")));
+        foreach (var (code, name) in Loc.Languages) _language.Items.Add(new LanguageChoice(code, name));
+        _language.SelectedItem = _language.Items.OfType<LanguageChoice>().FirstOrDefault(l => l.Code == _settings.Language)
+                                 ?? _language.Items[0];
     }
 
     private void WireHandlers()
@@ -245,6 +302,14 @@ internal sealed class ControlPanel : Form
             SettingsTouched?.Invoke(this, EventArgs.Empty);
         };
         _micDevice.SelectedIndexChanged += (_, _) => { if (_binding) return; _settings.MicDeviceId = SelectedMic?.Id; Raise(MicSettingsChanged); };
+        _language.SelectedIndexChanged += (_, _) =>
+        {
+            if (_binding || _language.SelectedItem is not LanguageChoice choice || choice.Code == _settings.Language) return;
+            _settings.Language = choice.Code;
+            SettingsTouched?.Invoke(this, EventArgs.Empty);
+            // After the combo's own event has finished: the panel is rebuilt around it.
+            BeginInvoke(() => LanguageChanged?.Invoke(this, EventArgs.Empty));
+        };
 
         _aspect.SelectedIndexChanged += (_, _) => { _settings.Aspect = (AspectMode)_aspect.SelectedIndex; Raise(DisplayChanged); };
         _scaling.SelectedIndexChanged += (_, _) => { _settings.Scaling = (ScalingMode)_scaling.SelectedIndex; Raise(DisplayChanged); };
@@ -310,6 +375,7 @@ internal sealed class ControlPanel : Form
 
         _vsync.CheckedChanged += (_, _) => { _settings.VSync = _vsync.Checked; Raise(DisplayChanged); };
         _passthrough.CheckedChanged += (_, _) => { _settings.AudioPassthrough = _passthrough.Checked; Raise(AudioSelectionChanged); };
+        _desktopAudio.CheckedChanged += (_, _) => { _settings.RecordDesktopAudio = _desktopAudio.Checked; Raise(AudioSelectionChanged); };
         _exclusive.CheckedChanged += (_, _) => { _settings.AudioExclusive = _exclusive.Checked; Raise(AudioSelectionChanged); };
         _onTop.CheckedChanged += (_, _) => { _settings.AlwaysOnTop = _onTop.Checked; Raise(DisplayChanged); };
         _autoStart.CheckedChanged += (_, _) => { if (_binding) return; _settings.AutoStart = _autoStart.Checked; SettingsTouched?.Invoke(this, EventArgs.Empty); };
@@ -330,7 +396,6 @@ internal sealed class ControlPanel : Form
 
         _startStop.Click += (_, _) => StartStopClicked?.Invoke(this, EventArgs.Empty);
         _rescan.Click += (_, _) => RescanClicked?.Invoke(this, EventArgs.Empty);
-        _saveReplay.Click += (_, _) => SaveReplayClicked?.Invoke(this, EventArgs.Empty);
         _download.Click += (_, _) => UpdateChecker.OpenReleasesPage();
     }
 
@@ -364,11 +429,13 @@ internal sealed class ControlPanel : Form
         _pages.Clear();
         _pageHost.Controls.Clear();
         _binding = true;
+        ApplyTexts();
 
         BuildSource();
         BuildPicture();
-        BuildAudio();
-        BuildRecording();
+        BuildSound();
+        BuildVideo();
+        BuildRecordAudio();
         BuildReplay();
         BuildLibrary();
         BuildShortcuts();
@@ -385,19 +452,17 @@ internal sealed class ControlPanel : Form
 
     private int PageWidth => Math.Max(480, Width - ScrollbarGutter);
 
-    private Sheet NewSheet(Page page, string title)
+    private Sheet NewSheet(Page page)
     {
         var content = new ContentPanel { BackColor = Theme.Shell, Width = PageWidth, Visible = false };
         _pages[page] = content;
         _pageHost.Controls.Add(content);
-        var sheet = new Sheet(content, PageWidth, Math.Max(PadX, (PageWidth - ColumnMaxWidth) / 2));
-        sheet.Title(title);
-        return sheet;
+        return new Sheet(content, PageWidth, Math.Max(PadX, (PageWidth - ColumnMaxWidth) / 2));
     }
 
     private void BuildSource()
     {
-        var s = NewSheet(Page.Source, "Source");
+        var s = NewSheet(Page.Source);
         s.Group("Capture card");
         s.Row("Card", _device);
         s.Row("Format", _format);
@@ -407,9 +472,9 @@ internal sealed class ControlPanel : Form
 
         s.Group("Profile");
         s.Row("Active profile", _profile);
-        var add = new FlatButton { Text = "New", ButtonRole = FlatButton.Role.Normal };
-        var rename = new FlatButton { Text = "Rename", ButtonRole = FlatButton.Role.Ghost };
-        var delete = new FlatButton { Text = "Delete", ButtonRole = FlatButton.Role.Ghost };
+        var add = new FlatButton { Text = Tr("New"), ButtonRole = FlatButton.Role.Normal };
+        var rename = new FlatButton { Text = Tr("Rename"), ButtonRole = FlatButton.Role.Ghost };
+        var delete = new FlatButton { Text = Tr("Delete"), ButtonRole = FlatButton.Role.Ghost };
         add.Click += (_, _) => NewProfile();
         rename.Click += (_, _) => RenameProfile();
         delete.Click += (_, _) => DeleteProfile();
@@ -426,7 +491,7 @@ internal sealed class ControlPanel : Form
 
     private void BuildPicture()
     {
-        var s = NewSheet(Page.Picture, "Picture");
+        var s = NewSheet(Page.Picture);
         s.Group("Shape", ("Reset picture", ResetPicture));
         s.Row("Aspect ratio", _aspect);
         s.Row("Scaling", _scaling);
@@ -445,10 +510,11 @@ internal sealed class ControlPanel : Form
         s.Finish();
     }
 
-    private void BuildAudio()
+    /// <summary>What you hear while playing: where the card's sound comes from and where it goes.</summary>
+    private void BuildSound()
     {
-        var s = NewSheet(Page.Audio, "Audio");
-        s.Group("Game sound", ("Reset audio", ResetAudio));
+        var s = NewSheet(Page.Sound);
+        s.Group("Game sound", ("Reset sound", ResetSound));
         s.Row("Input", _audioIn);
         s.Row("Output", _audioOut);
         s.Toggle(_passthrough);
@@ -460,6 +526,41 @@ internal sealed class ControlPanel : Form
         s.Toggle(_exclusive);
         s.Row("Restart every", _audioRestart, 96, "minutes (0 = never)");
         s.Note("Some cards drift out of sync over hours. A scheduled restart pulls them back.");
+        s.Note("What ends up in recordings is set under Recording > Audio.");
+        s.Finish();
+    }
+
+    private void BuildVideo()
+    {
+        var s = NewSheet(Page.Video);
+        s.Mono(_recordState);
+
+        s.Group("Encoder", ("Reset video", ResetVideo));
+        s.Row("Codec", _codec);
+        s.Row("Encoder", _encoder);
+        s.Text(_encoderNote);
+        s.Row("Rate control", _rate);
+        s.Row("Video bitrate", _videoBitrate, 120, "kbps");
+        s.Slider("Quality", _quality, _qualityValue);
+        s.Row("Keyframe every", _keyframe, 96, "seconds");
+
+        s.Group("File");
+        s.Row("Container", _container);
+        s.Text(_containerNote);
+        s.Row("Recordings", _recordsFolder);
+        s.Row("Screenshots", _screenshotsFolder);
+        s.Finish();
+    }
+
+    /// <summary>Everything about the sound that ends up in recordings and replays.</summary>
+    private void BuildRecordAudio()
+    {
+        var s = NewSheet(Page.RecordAudio);
+        s.Group("Recorded sound", ("Reset audio", ResetRecordAudio));
+        s.Toggle(_desktopAudio);
+        s.Note("Records everything the output plays, voice chat included. The game is only in it while its sound plays through the output.");
+        s.Row("Audio bitrate", _audioBitrate, 96, "kbps");
+        s.Row("A/V offset", _audioOffset, 96, "ms, positive delays the sound");
 
         s.Group("Microphone", ("Reset microphone", ResetMic));
         s.Toggle(_micEnabled);
@@ -474,46 +575,16 @@ internal sealed class ControlPanel : Form
         s.Finish();
     }
 
-    private void BuildRecording()
-    {
-        var s = NewSheet(Page.Recording, "Recording");
-        s.Mono(_recordState);
-        var openFolder = new FlatButton { Glyph = UiIcon.Folder, Text = "Open folder" };
-        openFolder.Click += (_, _) => OpenFolderClicked?.Invoke(this, EventArgs.Empty);
-        s.Buttons(openFolder);
-
-        s.Group("Encoder", ("Reset recording", ResetRecording));
-        s.Row("Codec", _codec);
-        s.Row("Encoder", _encoder);
-        s.Text(_encoderNote);
-        s.Row("Rate control", _rate);
-        s.Row("Video bitrate", _videoBitrate, 120, "kbps");
-        s.Slider("Quality", _quality, _qualityValue);
-        s.Row("Keyframe every", _keyframe, 96, "seconds");
-
-        s.Group("File");
-        s.Row("Container", _container);
-        s.Text(_containerNote);
-        s.Row("Recordings", _recordsFolder);
-        s.Row("Screenshots", _screenshotsFolder);
-
-        s.Group("Sound");
-        s.Row("Audio bitrate", _audioBitrate, 96, "kbps");
-        s.Row("A/V offset", _audioOffset, 96, "ms, positive delays the sound");
-        s.Finish();
-    }
-
     private void BuildReplay()
     {
-        var s = NewSheet(Page.Replay, "Instant replay");
+        var s = NewSheet(Page.Replay);
         s.Toggle(_replayEnabled);
         s.Mono(_replayState, 2);
-        s.Buttons(_saveReplay);
 
         s.Group("Length");
         s.Row("Keep", _replayBuffer, 96, "seconds");
         s.Row("Save", _replaySave, 96, "seconds of it");
-        s.Note($"While the preview runs, short pieces are written to a temporary folder and the oldest are dropped. " +
+        s.Note("While the preview runs, short pieces are written to a temporary folder and the oldest are dropped. " +
                "Saving joins the last ones without re-encoding, so it takes a moment.");
 
         s.Group("Where");
@@ -521,31 +592,25 @@ internal sealed class ControlPanel : Form
         s.Finish();
     }
 
+    /// <summary>The library scrolls itself, so its page is exactly the viewport's height.</summary>
     private void BuildLibrary()
     {
-        var s = NewSheet(Page.Library, "Captures");
-        var refresh = new FlatButton { Glyph = UiIcon.Refresh, Text = "Refresh" };
-        var open = new FlatButton { Glyph = UiIcon.Folder, Text = "Open folder" };
-        var clear = new FlatButton { ButtonRole = FlatButton.Role.Ghost, Glyph = UiIcon.Trash, Text = "Delete all" };
-        refresh.Click += (_, _) => ReloadRecent();
-        open.Click += (_, _) => OpenFolderClicked?.Invoke(this, EventArgs.Empty);
-        clear.Click += (_, _) => DeleteAllRecent();
-        s.Buttons(refresh, open, clear);
-        s.Note("The twelve newest recordings, replays and screenshots. Click one to open it.");
-        int width = s.ContentWidth;
-        s.Custom(_recent, Math.Max(300, width * 3 / 4 * 9 / 16 + 40));
-        s.Finish();
+        var content = new ContentPanel { BackColor = Theme.Shell, Width = PageWidth, Height = _pageHost.Height, Visible = false };
+        _pages[Page.Library] = content;
+        _pageHost.Controls.Add(content);
+        _library.Dock = DockStyle.Fill;
+        content.Controls.Add(_library);
     }
 
     private void BuildShortcuts()
     {
-        var s = NewSheet(Page.Shortcuts, "Shortcuts");
+        var s = NewSheet(Page.Shortcuts);
         s.Note("Click a key, then press the new one. Esc cancels; Backspace or a right-click clears it.");
         s.Group("Capture", ("Reset shortcuts", () =>
         {
             _shortcuts.ResetToDefaults();
             LoadShortcuts();
-            ShortcutsChanged?.Invoke(this, "Shortcuts put back to their defaults");
+            ShortcutsChanged?.Invoke(this, Tr("Shortcuts put back to their defaults"));
             SettingsTouched?.Invoke(this, EventArgs.Empty);
         }));
         foreach (var d in ShortcutCatalog.All.Where(d => d.IsRecording))
@@ -561,16 +626,20 @@ internal sealed class ControlPanel : Form
 
     private void BuildGeneral()
     {
-        var s = NewSheet(Page.General, "General");
+        var s = NewSheet(Page.General);
+        s.Group("Language");
+        s.Row("Interface", _language);
+        s.Note("Automatic follows the language of Windows, and uses English when that language is not in the list.");
+
         s.Group("Window");
         s.Toggle(_onTop);
         s.Toggle(_autoStart);
         s.Toggle(_showStats);
 
         s.Group("Troubleshooting");
-        var diagnostics = new FlatButton { Glyph = UiIcon.Download, Text = "Save a report" };
-        var trace = new FlatButton { Glyph = UiIcon.Stopwatch, Text = "Measure 10 s" };
-        var encoders = new FlatButton { Glyph = UiIcon.Chip, Text = "Test encoders" };
+        var diagnostics = new FlatButton { Glyph = UiIcon.Download, Text = Tr("Save a report") };
+        var trace = new FlatButton { Glyph = UiIcon.Stopwatch, Text = Tr("Measure 10 s") };
+        var encoders = new FlatButton { Glyph = UiIcon.Chip, Text = Tr("Test encoders") };
         diagnostics.Click += (_, _) => DiagnosticsClicked?.Invoke(this, EventArgs.Empty);
         trace.Click += (_, _) => TraceClicked?.Invoke(this, EventArgs.Empty);
         encoders.Click += (_, _) => EncoderTestClicked?.Invoke(this, EventArgs.Empty);
@@ -579,11 +648,11 @@ internal sealed class ControlPanel : Form
                "Test encoders writes a short clip with each encoder and reports which ones work.");
         s.Mono(_statusLine, 3);
 
-        var resetAll = new FlatButton { ButtonRole = FlatButton.Role.Ghost, Glyph = UiIcon.Refresh, Text = "Reset all settings" };
+        var resetAll = new FlatButton { ButtonRole = FlatButton.Role.Ghost, Glyph = UiIcon.Refresh, Text = Tr("Reset all settings") };
         resetAll.Click += (_, _) =>
         {
-            if (MessageBox.Show(this, "Put every setting back to its default?\n\nYour capture card, format and folders are kept.",
-                    "Reset all settings", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            if (MessageBox.Show(this, Tr("Put every setting back to its default?\n\nYour capture card, format and folders are kept."),
+                    Tr("Reset all settings"), MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
                 return;
             _settings.ResetToDefaults();
             LoadFromSettings();
@@ -596,7 +665,7 @@ internal sealed class ControlPanel : Form
 
     private void BuildAbout()
     {
-        var s = NewSheet(Page.About, "About");
+        var s = NewSheet(Page.About);
         s.Group("Version");
         s.Text(new Label { Text = $"Ripsaw Studio {UpdateChecker.Format(UpdateChecker.Current)}" }, Theme.Heading, Theme.Text, minLines: 1);
         s.Text(_updateStatus, minLines: 1);
@@ -604,16 +673,24 @@ internal sealed class ControlPanel : Form
         s.Group("Ripsaw Studio");
         s.Text(new Label
         {
-            Text = "A lightweight capture app for any capture card. The feed reaches the screen the moment it " +
-                   "arrives, and recording and instant replay are built in, with nothing sitting in between.",
+            Text = Tr("A lightweight capture app for any capture card. The feed reaches the screen the moment it " +
+                      "arrives, and recording and instant replay are built in, with nothing sitting in between."),
         }, Theme.Body, Theme.TextDim);
-        var website = new FlatButton { Glyph = UiIcon.Info, Text = "Website" };
-        var source = new FlatButton { Glyph = UiIcon.Download, Text = "Releases on GitHub" };
+        var website = new FlatButton { Glyph = UiIcon.Info, Text = Tr("Website") };
         website.Click += (_, _) => OpenLink("https://onlyalexrp.itch.io/ripsaw-studio");
-        source.Click += (_, _) => UpdateChecker.OpenReleasesPage();
-        // Last in the row: it is hidden while there is no update, and must not leave a gap.
-        s.Buttons(website, source, _download);
-        s.Note("Settings and logs: " + (Path.GetDirectoryName(AppSettings.SettingsPath) ?? ""));
+        if (UpdateChecker.IsStoreInstall)
+        {
+            // The Store updates the app itself, and its rules forbid pointing at another download.
+            s.Buttons(website);
+        }
+        else
+        {
+            var source = new FlatButton { Glyph = UiIcon.Download, Text = Tr("Releases on GitHub") };
+            source.Click += (_, _) => UpdateChecker.OpenReleasesPage();
+            // Last in the row: it is hidden while there is no update, and must not leave a gap.
+            s.Buttons(website, source, _download);
+        }
+        s.Note(Tr("Settings and logs:") + " " + (Path.GetDirectoryName(AppSettings.SettingsPath) ?? ""));
         s.Finish();
     }
 
@@ -631,13 +708,16 @@ internal sealed class ControlPanel : Form
         var category = Pages.CategoryOf(page);
         _lastPage[category] = page;
         _nav.Active = category;
-        _strip.SetTabs(Pages.PagesOf(category), page);
+        // A lone tab would only repeat the name under the icon.
+        var tabs = Pages.PagesOf(category);
+        _strip.SetTabs(tabs.Length > 1 ? tabs.Select(p => (p.Page, Tr(p.Label))).ToArray() : Array.Empty<(Page, string)>(), page);
         foreach (var (key, content) in _pages)
         {
             content.Visible = key == page;
             if (key == page) content.Top = 0;
         }
-        if (page == Page.Library) ReloadRecent();
+        if (page == Page.Library) _library.Reload();
+        else _library.ClearSelection();
         UpdateScrollbar();
     }
 
@@ -653,6 +733,7 @@ internal sealed class ControlPanel : Form
             content.Width = _pageHost.Width;
             content.Top = Math.Clamp(content.Top, Math.Min(0, _pageHost.Height - content.Height), 0);
         }
+        if (_pages.TryGetValue(Page.Library, out var library)) library.Height = _pageHost.Height;
         UpdateRegion();
         UpdateScrollbar();
     }
@@ -680,6 +761,8 @@ internal sealed class ControlPanel : Form
     /// </summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        // The library's own keys first, so Esc clears a selection before it closes the panel.
+        if (_page == Page.Library && !KeyCaptureButton.AnyCapturing && _library.HandleKey(keyData)) return true;
         if (Owner is MainForm main && main.DispatchShortcut(keyData)) return true;
         return base.ProcessCmdKey(ref msg, keyData);
     }
@@ -717,6 +800,7 @@ internal sealed class ControlPanel : Form
 
     private void ScrollBy(int delta)
     {
+        if (_page == Page.Library) { _library.ScrollBy(delta); return; }
         if (!_pages.TryGetValue(_page, out var content)) return;
         int lowest = Math.Min(0, _pageHost.Height - content.Height);
         content.Top = Math.Clamp(content.Top + delta, lowest, 0);
@@ -725,6 +809,7 @@ internal sealed class ControlPanel : Form
 
     private void ScrollToRatio(float ratio)
     {
+        if (_page == Page.Library) { _library.ScrollToRatio(ratio); return; }
         if (!_pages.TryGetValue(_page, out var content)) return;
         int lowest = Math.Min(0, _pageHost.Height - content.Height);
         content.Top = (int)Math.Round(lowest * Math.Clamp(ratio, 0f, 1f));
@@ -733,6 +818,7 @@ internal sealed class ControlPanel : Form
 
     private void UpdateScrollbar()
     {
+        if (_page == Page.Library) { _scrollThumb.SetMetrics(_library.ScrollRatio, _library.ViewRatio); return; }
         if (!_pages.TryGetValue(_page, out var content) || _pageHost.Height <= 0)
         {
             _scrollThumb.SetMetrics(0f, 1f);
@@ -794,7 +880,7 @@ internal sealed class ControlPanel : Form
         SettingsTouched?.Invoke(this, EventArgs.Empty);
     }
 
-    private void ResetAudio()
+    private void ResetSound()
     {
         var d = new AppSettings();
         _settings.Volume = d.Volume;
@@ -805,6 +891,18 @@ internal sealed class ControlPanel : Form
         LoadFromSettings();
         AudioSelectionChanged?.Invoke(this, EventArgs.Empty);
         VolumeChanged?.Invoke(this, EventArgs.Empty);
+        SettingsTouched?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ResetRecordAudio()
+    {
+        var d = new AppSettings();
+        _settings.RecordDesktopAudio = d.RecordDesktopAudio;
+        _settings.AudioBitrateKbps = d.AudioBitrateKbps;
+        _settings.AudioOffsetMs = d.AudioOffsetMs;
+        LoadFromSettings();
+        AudioSelectionChanged?.Invoke(this, EventArgs.Empty);
+        RecordingSettingsChanged?.Invoke(this, EventArgs.Empty);
         SettingsTouched?.Invoke(this, EventArgs.Empty);
     }
 
@@ -822,12 +920,10 @@ internal sealed class ControlPanel : Form
         SettingsTouched?.Invoke(this, EventArgs.Empty);
     }
 
-    private void ResetRecording()
+    private void ResetVideo()
     {
         var d = new AppSettings();
         _settings.VideoBitrateKbps = d.VideoBitrateKbps;
-        _settings.AudioBitrateKbps = d.AudioBitrateKbps;
-        _settings.AudioOffsetMs = d.AudioOffsetMs;
         _settings.Codec = d.Codec;
         _settings.EncoderId = d.EncoderId;
         _settings.Container = d.Container;
@@ -841,8 +937,8 @@ internal sealed class ControlPanel : Form
 
     private void NewProfile()
     {
-        string? name = Prompt.Ask(this, "New profile", "Name it after the console it is for:",
-                                  "Console " + (_settings.Profiles.Count + 1));
+        string? name = Prompt.Ask(this, Tr("New profile"), Tr("Name it after the console it is for:"),
+                                  Tr("Console {0}", _settings.Profiles.Count + 1));
         if (name is null) return;
         _settings.AddProfile(name);
         LoadProfiles();
@@ -851,7 +947,7 @@ internal sealed class ControlPanel : Form
 
     private void RenameProfile()
     {
-        string? name = Prompt.Ask(this, "Rename profile", "New name:", _settings.ActiveProfile);
+        string? name = Prompt.Ask(this, Tr("Rename profile"), Tr("New name:"), _settings.ActiveProfile);
         if (name is null) return;
         _settings.RenameActiveProfile(name);
         LoadProfiles();
@@ -862,11 +958,11 @@ internal sealed class ControlPanel : Form
     {
         if (_settings.Profiles.Count <= 1)
         {
-            MessageBox.Show(this, "There has to be at least one profile.", "Delete profile",
+            MessageBox.Show(this, Tr("There has to be at least one profile."), Tr("Delete profile"),
                             MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        if (MessageBox.Show(this, $"Delete the profile \"{_settings.ActiveProfile}\"?", "Delete profile",
+        if (MessageBox.Show(this, Tr("Delete the profile \"{0}\"?", _settings.ActiveProfile), Tr("Delete profile"),
                             MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
             return;
         _settings.DeleteActiveProfile();
@@ -893,7 +989,7 @@ internal sealed class ControlPanel : Form
     private void SelectActiveProfile()
     {
         var active = _settings.Profiles.FirstOrDefault(p => p.Name == _settings.ActiveProfile);
-        _nav.Profile = "Profile: " + _settings.ActiveProfile;
+        _nav.Profile = Tr("Profile: {0}", _settings.ActiveProfile);
         if (ReferenceEquals(_profile.SelectedItem, active)) return;
         bool wasBinding = _binding;
         _binding = true;
@@ -901,32 +997,9 @@ internal sealed class ControlPanel : Form
         _binding = wasBinding;
     }
 
-    private void ReloadRecent() =>
-        _recent.Reload(_settings.RecordsFolder, _settings.ReplayFolder, _settings.ScreenshotsFolder);
-
-    private void DeleteAllRecent()
+    private void ReloadRecent()
     {
-        if (MessageBox.Show(this,
-                "This deletes every recording, replay and screenshot in the Recordings, Replay and Screenshots folders. " +
-                "It can't be undone.",
-                "Delete all captures", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
-            return;
-
-        foreach (var folder in new[] { _settings.RecordsFolder, _settings.ReplayFolder, _settings.ScreenshotsFolder })
-        {
-            if (string.IsNullOrWhiteSpace(folder)) continue;
-            try
-            {
-                if (!Directory.Exists(folder)) continue;
-                foreach (var file in Directory.EnumerateFiles(folder).Where(f => Path.GetExtension(f) is ".mp4" or ".png"))
-                {
-                    try { File.Delete(file); }
-                    catch { /* open elsewhere, or gone already */ }
-                }
-            }
-            catch { }
-        }
-        ReloadRecent();
+        if (_page == Page.Library) _library.Reload();
     }
 
     // ---- binding ----------------------------------------------------------------------------------
@@ -974,6 +1047,7 @@ internal sealed class ControlPanel : Form
 
         _vsync.Checked = _settings.VSync;
         _passthrough.Checked = _settings.AudioPassthrough;
+        _desktopAudio.Checked = _settings.RecordDesktopAudio;
         _exclusive.Checked = _settings.AudioExclusive;
         _onTop.Checked = _settings.AlwaysOnTop;
         _autoStart.Checked = _settings.AutoStart;
@@ -1027,7 +1101,7 @@ internal sealed class ControlPanel : Form
         _encoder.Items.Clear();
         var codec = _settings.Codec;
         var auto = EncoderCatalog.Resolve(_encoders, codec, "auto", _previewAdapter);
-        _encoder.Items.Add(new EncoderChoice("auto", auto is null ? "Automatic" : $"Automatic ({auto.Label})", auto));
+        _encoder.Items.Add(new EncoderChoice("auto", auto is null ? Tr("Automatic") : Tr("Automatic ({0})", auto.Label), auto));
         foreach (var e in _encoders.Where(e => e.Codec == codec))
             _encoder.Items.Add(new EncoderChoice(e.Id, e.Label, e));
         var chosen = _encoder.Items.OfType<EncoderChoice>().FirstOrDefault(c => c.Id == _settings.EncoderId);
@@ -1041,12 +1115,12 @@ internal sealed class ControlPanel : Form
                    ?? EncoderCatalog.Resolve(_encoders, _settings.Codec, _settings.EncoderId, _previewAdapter);
         _encoderNote.Text = info switch
         {
-            null when _encoders.Count == 0 => "Looking for encoders...",
-            null => "No encoder for this codec on this PC.",
-            { Hardware: false } => "Runs on the processor. Fine at 1080p30; at 1080p60 it can drop frames.",
+            null when _encoders.Count == 0 => Tr("Looking for encoders..."),
+            null => Tr("No encoder for this codec on this PC."),
+            { Hardware: false } => Tr("Runs on the processor. Fine at 1080p30; at 1080p60 it can drop frames."),
             _ when EncoderCatalog.Same(info.AdapterName, _previewAdapter) =>
-                "Runs on the same graphics card as the preview, straight from the captured frames.",
-            _ => $"Frames are copied over to the {info.AdapterName} first, which costs some processor time.",
+                Tr("Runs on the same graphics card as the preview, straight from the captured frames."),
+            _ => Tr("Frames are copied over to the {0} first, which costs some processor time.", info.AdapterName),
         };
 
         bool quality = _settings.RateControl == RateControl.Quality;
@@ -1059,10 +1133,10 @@ internal sealed class ControlPanel : Form
         if (hevc && _container.SelectedIndex == 0) _container.SetSelectedSilently(1);
         if (!hevc && _container.SelectedIndex != (int)_settings.Container) _container.SetSelectedSilently((int)_settings.Container);
         _containerNote.Text = hevc
-            ? "HEVC is always written as plain MP4: Windows cannot fragment it."
+            ? Tr("HEVC is always written as plain MP4: Windows cannot fragment it.")
             : _settings.Container == ContainerFormat.FragmentedMp4
-                ? "Stays playable if the app or the PC crashes mid-recording. Some older editors can't open it."
-                : "Opens everywhere, but a crash mid-recording leaves a file that won't play.";
+                ? Tr("Stays playable if the app or the PC crashes mid-recording. Some older editors can't open it.")
+                : Tr("Opens everywhere, but a crash mid-recording leaves a file that won't play.");
     }
 
     // ---- calls from the shell ----------------------------------------------------------------------
@@ -1071,7 +1145,7 @@ internal sealed class ControlPanel : Form
     {
         _binding = true;
         _adapter.Items.Clear();
-        _adapter.Items.Add(AutoAdapter);
+        _adapter.Items.Add(Tr("Automatic"));
         foreach (var name in adapters) _adapter.Items.Add(name);
         int index = selected is null ? 0 : _adapter.Items.IndexOf(selected);
         _adapter.SelectedIndex = index < 0 ? 0 : index;
@@ -1150,7 +1224,8 @@ internal sealed class ControlPanel : Form
 
     public void SetStreaming(bool streaming)
     {
-        _startStop.Text = streaming ? "Stop preview" : "Start preview";
+        _streaming = streaming;
+        _startStop.Text = streaming ? Tr("Stop preview") : Tr("Start preview");
         _startStop.Glyph = streaming ? UiIcon.Stop : UiIcon.Play;
         _startStop.ButtonRole = streaming ? FlatButton.Role.Normal : FlatButton.Role.Accent;
     }
@@ -1174,9 +1249,9 @@ internal sealed class ControlPanel : Form
 
     public void SetReplayState(bool armed, bool saving)
     {
+        _replayArmed = armed;
+        _replaySaving = saving;
         _nav.SetReplayAvailable(armed, saving);
-        _saveReplay.Enabled = armed && !saving;
-        _saveReplay.Text = saving ? "Saving..." : "Save replay";
     }
 
     public void SetLiveStatus(bool live, string text)
@@ -1190,19 +1265,19 @@ internal sealed class ControlPanel : Form
         _lastUpdate = result;
         if (!result.Checked)
         {
-            _updateStatus.Text = "Could not check for updates.";
+            _updateStatus.Text = Tr("Could not check for updates.");
             _updateStatus.ForeColor = Theme.TextFaint;
             _download.Visible = false;
         }
         else if (result.UpdateAvailable)
         {
-            _updateStatus.Text = $"Version {UpdateChecker.Format(result.Latest)} is available.";
+            _updateStatus.Text = Tr("Version {0} is available.", UpdateChecker.Format(result.Latest));
             _updateStatus.ForeColor = Theme.Accent;
             _download.Visible = true;
         }
         else
         {
-            _updateStatus.Text = "This is the latest version.";
+            _updateStatus.Text = Tr("This is the latest version.");
             _updateStatus.ForeColor = Theme.TextDim;
             _download.Visible = false;
         }
@@ -1237,14 +1312,6 @@ internal sealed class ControlPanel : Form
         private int FreeLeft => _firstGroup ? _padX : ControlLeft;
         public int ContentWidth => Math.Min(_width - _padX * 2, ColumnMaxWidth);
 
-        public void Title(string text)
-        {
-            var label = MakeLabel(text, Theme.PageTitle, Theme.Text);
-            label.SetBounds(_padX - 2, _y, ContentWidth, 36);
-            _page.Controls.Add(label);
-            _y += 46;
-        }
-
         public void Group(string title, (string Text, Action Run)? action = null)
         {
             if (!_firstGroup)
@@ -1258,13 +1325,13 @@ internal sealed class ControlPanel : Form
             else _y += 4;
             _firstGroup = false;
 
-            var label = MakeLabel(title, Theme.Heading, Theme.Text);
+            var label = MakeLabel(Tr(title), Theme.Heading, Theme.Text);
             label.SetBounds(_padX, _y, ContentWidth - 160, 22);
             _page.Controls.Add(label);
             if (action is { } a)
             {
-                var link = new FlatButton { ButtonRole = FlatButton.Role.Ghost, Text = a.Text, Font = Theme.Small };
-                int w = TextRenderer.MeasureText(a.Text, Theme.Small).Width + 22;
+                var link = new FlatButton { ButtonRole = FlatButton.Role.Ghost, Text = Tr(a.Text), Font = Theme.Small };
+                int w = TextRenderer.MeasureText(link.Text, Theme.Small).Width + 22;
                 link.SetBounds(_padX + ContentWidth - w, _y - 4, w, 28);
                 link.Click += (_, _) => a.Run();
                 _page.Controls.Add(link);
@@ -1280,7 +1347,7 @@ internal sealed class ControlPanel : Form
             _page.Controls.Add(control);
             if (suffix is not null)
             {
-                var unit = MakeLabel(suffix, Theme.Body, Theme.TextDim);
+                var unit = MakeLabel(Tr(suffix), Theme.Body, Theme.TextDim);
                 unit.SetBounds(ControlLeft + w + 10, _y, Math.Max(10, ControlWidth - w - 10 + 160), RowHeight);
                 unit.TextAlign = ContentAlignment.MiddleLeft;
                 _page.Controls.Add(unit);
@@ -1324,7 +1391,7 @@ internal sealed class ControlPanel : Form
         /// <summary>Small print under a row, in the control column so it reads as belonging to it.</summary>
         public void Note(string text)
         {
-            var label = MakeLabel(text, Theme.Hint, Theme.TextFaint);
+            var label = MakeLabel(Tr(text), Theme.Hint, Theme.TextFaint);
             Place(label, Theme.Hint);
         }
 
@@ -1390,18 +1457,11 @@ internal sealed class ControlPanel : Form
             _y += RowHeight + 6;
         }
 
-        public void Custom(Control control, int height)
-        {
-            control.SetBounds(_padX, _y, ContentWidth, height);
-            _page.Controls.Add(control);
-            _y += height + RowGap;
-        }
-
         public void Finish() => _page.Height = _y + 30;
 
         private void AddCaption(string text, int y, int height, bool wide = false)
         {
-            var caption = MakeLabel(text, Theme.Body, Theme.TextDim);
+            var caption = MakeLabel(Tr(text), Theme.Body, Theme.TextDim);
             caption.TextAlign = ContentAlignment.MiddleLeft;
             caption.SetBounds(_padX, y, wide ? 270 : LabelWidth - 12, height);
             _page.Controls.Add(caption);
@@ -1476,7 +1536,7 @@ internal sealed class PathField : Control
 
     private void Browse()
     {
-        using var dialog = new FolderBrowserDialog { SelectedPath = _path, UseDescriptionForTitle = true, Description = "Choose a folder" };
+        using var dialog = new FolderBrowserDialog { SelectedPath = _path, UseDescriptionForTitle = true, Description = Tr("Choose a folder") };
         if (dialog.ShowDialog(FindForm()) != DialogResult.OK) return;
         Path = dialog.SelectedPath;
         PathChanged?.Invoke(this, _path);

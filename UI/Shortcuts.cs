@@ -59,7 +59,7 @@ internal static class ShortcutCatalog
     /// </summary>
     public static string Describe(Keys keys)
     {
-        if (keys == Keys.None) return "not bound";
+        if (keys == Keys.None) return Tr("not bound");
         var parts = new List<string>(4);
         if (keys.HasFlag(Keys.Control)) parts.Add("Ctrl");
         if (keys.HasFlag(Keys.Shift)) parts.Add("Shift");
@@ -187,7 +187,7 @@ internal sealed class ShortcutMap
     {
         var primary = Get(action, ShortcutSlot.Primary);
         var alternate = Get(action, ShortcutSlot.Alternate);
-        if (primary == Keys.None && alternate == Keys.None) return "not bound";
+        if (primary == Keys.None && alternate == Keys.None) return Tr("not bound");
         if (alternate == Keys.None) return ShortcutCatalog.Describe(primary);
         if (primary == Keys.None) return ShortcutCatalog.Describe(alternate);
         return ShortcutCatalog.Describe(primary) + " / " + ShortcutCatalog.Describe(alternate);

@@ -1022,7 +1022,7 @@ internal sealed class KeyCaptureButton : Control
         }
 
         bool empty = _keys == System.Windows.Forms.Keys.None;
-        string text = _capturing ? "Press a key..." : empty ? EmptyText : ShortcutCatalog.Describe(_keys);
+        string text = _capturing ? Tr("Press a key...") : empty ? EmptyText : ShortcutCatalog.Describe(_keys);
         Color ink = _capturing ? Theme.Accent : empty ? Theme.TextFaint : Theme.Text;
         TextRenderer.DrawText(g, text, _capturing ? Theme.Body : Theme.BodyBold, rect, ink,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
@@ -1070,8 +1070,8 @@ internal static class Prompt
             Bounds = new Rectangle(18, 42, 324, 24),
             MaxLength = 40,
         };
-        var ok = new FlatButton { Text = "OK", ButtonRole = FlatButton.Role.Accent, Bounds = new Rectangle(178, 84, 78, 30) };
-        var cancel = new FlatButton { Text = "Cancel", Bounds = new Rectangle(264, 84, 78, 30) };
+        var ok = new FlatButton { Text = Tr("OK"), ButtonRole = FlatButton.Role.Accent, Bounds = new Rectangle(164, 84, 86, 30) };
+        var cancel = new FlatButton { Text = Tr("Cancel"), Bounds = new Rectangle(256, 84, 86, 30) };
         ok.DialogResult = DialogResult.OK;
         cancel.DialogResult = DialogResult.Cancel;
 

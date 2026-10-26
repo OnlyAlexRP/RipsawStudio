@@ -4,8 +4,8 @@ namespace RipsawStudio.UI;
 
 internal enum Icon
 {
-    None, Monitor, Record, Gear, Info, Refresh, Download, Stopwatch, Folder,
-    Camera, Stop, Play, Chip, Keyboard, Rewind, Trash,
+    None, Record, Info, Refresh, Download, Stopwatch, Folder,
+    Camera, Stop, Play, Chip, Rewind, Trash, Star, StarFilled, Check, Pencil, Cross,
 }
 
 /// <summary>
@@ -25,32 +25,10 @@ internal static class Icons
 
         switch (icon)
         {
-            case Icon.Monitor:
-                g.DrawRectangle(pen, r.X, r.Y + r.Height * 0.12f, r.Width, r.Height * 0.62f);
-                g.DrawLine(pen, r.X + r.Width * 0.32f, r.Bottom, r.X + r.Width * 0.68f, r.Bottom);
-                g.DrawLine(pen, r.X + r.Width * 0.5f, r.Y + r.Height * 0.74f, r.X + r.Width * 0.5f, r.Bottom);
-                break;
-
             case Icon.Record:
                 g.DrawEllipse(pen, r.X, r.Y, r.Width, r.Height);
                 g.FillEllipse(brush, r.X + r.Width * 0.28f, r.Y + r.Height * 0.28f, r.Width * 0.44f, r.Height * 0.44f);
                 break;
-
-            case Icon.Gear:
-            {
-                float cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
-                float outer = r.Width * 0.5f, inner = r.Width * 0.34f;
-                for (int i = 0; i < 8; i++)
-                {
-                    double a = i * Math.PI / 4;
-                    g.DrawLine(pen,
-                        cx + (float)Math.Cos(a) * inner, cy + (float)Math.Sin(a) * inner,
-                        cx + (float)Math.Cos(a) * outer, cy + (float)Math.Sin(a) * outer);
-                }
-                g.DrawEllipse(pen, cx - inner, cy - inner, inner * 2, inner * 2);
-                g.DrawEllipse(pen, cx - r.Width * 0.13f, cy - r.Width * 0.13f, r.Width * 0.26f, r.Width * 0.26f);
-                break;
-            }
 
             case Icon.Info:
                 g.DrawEllipse(pen, r.X, r.Y, r.Width, r.Height);
@@ -137,17 +115,6 @@ internal static class Icons
                 }
                 break;
 
-            case Icon.Keyboard:
-                g.DrawRectangle(pen, r.X, r.Y + r.Height * 0.2f, r.Width, r.Height * 0.6f);
-                for (int i = 0; i < 4; i++)
-                {
-                    float x = r.X + r.Width * (0.16f + i * 0.22f);
-                    g.DrawLine(pen, x, r.Y + r.Height * 0.38f, x, r.Y + r.Height * 0.42f);
-                }
-                g.DrawLine(pen, r.X + r.Width * 0.3f, r.Y + r.Height * 0.62f,
-                                r.X + r.Width * 0.7f, r.Y + r.Height * 0.62f);
-                break;
-
             case Icon.Rewind:
                 // Two arrowheads pointing back, over a bar: rewind, not just "play backwards".
                 g.FillPolygon(brush, new[]
@@ -189,6 +156,47 @@ internal static class Icons
                                 r.X + r.Width * 0.5f, r.Bottom - r.Height * 0.14f);
                 g.DrawLine(pen, r.Right - r.Width * 0.38f, r.Y + r.Height * 0.4f,
                                 r.Right - r.Width * 0.4f, r.Bottom - r.Height * 0.14f);
+                break;
+
+            case Icon.Star:
+            case Icon.StarFilled:
+            {
+                var points = new PointF[10];
+                float cx = r.X + r.Width / 2, cy = r.Y + r.Height * 0.54f;
+                for (int i = 0; i < 10; i++)
+                {
+                    double a = -Math.PI / 2 + i * Math.PI / 5;
+                    float radius = (i % 2 == 0 ? 0.52f : 0.22f) * r.Width;
+                    points[i] = new PointF(cx + (float)Math.Cos(a) * radius, cy + (float)Math.Sin(a) * radius);
+                }
+                if (icon == Icon.StarFilled) g.FillPolygon(brush, points);
+                g.DrawPolygon(pen, points);
+                break;
+            }
+
+            case Icon.Check:
+                g.DrawLines(pen, new[]
+                {
+                    new PointF(r.X + r.Width * 0.1f, r.Y + r.Height * 0.52f),
+                    new PointF(r.X + r.Width * 0.4f, r.Y + r.Height * 0.8f),
+                    new PointF(r.Right - r.Width * 0.08f, r.Y + r.Height * 0.2f),
+                });
+                break;
+
+            case Icon.Pencil:
+                g.DrawPolygon(pen, new[]
+                {
+                    new PointF(r.X + r.Width * 0.08f, r.Bottom - r.Height * 0.08f),
+                    new PointF(r.X + r.Width * 0.14f, r.Bottom - r.Height * 0.34f),
+                    new PointF(r.Right - r.Width * 0.3f, r.Y + r.Height * 0.08f),
+                    new PointF(r.Right - r.Width * 0.08f, r.Y + r.Height * 0.3f),
+                    new PointF(r.X + r.Width * 0.34f, r.Bottom - r.Height * 0.14f),
+                });
+                break;
+
+            case Icon.Cross:
+                g.DrawLine(pen, r.X + r.Width * 0.15f, r.Y + r.Height * 0.15f, r.Right - r.Width * 0.15f, r.Bottom - r.Height * 0.15f);
+                g.DrawLine(pen, r.Right - r.Width * 0.15f, r.Y + r.Height * 0.15f, r.X + r.Width * 0.15f, r.Bottom - r.Height * 0.15f);
                 break;
         }
 

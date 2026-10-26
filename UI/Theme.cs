@@ -55,8 +55,6 @@ internal static class Theme
     public static readonly Font Mono = new("Consolas", 8.5f);
     public static readonly Font BodyBold = new(TextFace, 9.5f, FontStyle.Bold);
     public static readonly Font Large = new(TextFace, 11f);
-    /// <summary>Page titles.</summary>
-    public static readonly Font PageTitle = new(DisplayFace, 17f, FontStyle.Bold);
     /// <summary>Live readouts in the signal strip: resolution, frame rate, timecode.</summary>
     public static readonly Font Readout = new(DisplayFace, 13f, FontStyle.Bold);
     public static readonly Font ReadoutSmall = new(DisplayFace, 9f);

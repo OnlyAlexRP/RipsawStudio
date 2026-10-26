@@ -69,6 +69,7 @@ public sealed class MainForm : Form
     public MainForm()
     {
         _settings = AppSettings.Load();
+        Loc.Apply(_settings.Language);
         _shortcuts = new ShortcutMap(_settings);
         _engine = new CaptureEngine(_settings.Adapter);
         _panel = new ControlPanel(_settings, _shortcuts);
@@ -85,7 +86,7 @@ public sealed class MainForm : Form
         ApplyWindowIcon();
 
         _video.Dock = DockStyle.Fill;
-        _video.PlaceholderText = "Press Esc for the controls";
+        _video.PlaceholderText = Tr("Press Esc for the controls");
         Controls.Add(_video);
 
         // The backdrop, the panel and the overlays are borderless owned windows rather than
@@ -163,7 +164,7 @@ public sealed class MainForm : Form
             await RefreshDevices();
             RefreshAudioDevices();
             RestartAudio();
-            _toast.Show("Devices rescanned", false);
+            _toast.Show(Tr("Devices rescanned"), false);
         };
         _panel.StartStopClicked += async (_, _) => await ToggleStreaming(userAction: true);
         _panel.RecordClicked += async (_, _) => await ToggleRecording();
@@ -180,7 +181,7 @@ public sealed class MainForm : Form
         {
             ApplyAllSettings();
             RestartAudio();
-            _toast.Show("Settings reset to defaults", false);
+            _toast.Show(Tr("Settings reset to defaults"), false);
         };
         _panel.DisplayChanged += (_, _) => ApplyDisplaySettings();
         _panel.VolumeChanged += (_, _) =>
@@ -201,6 +202,13 @@ public sealed class MainForm : Form
         _panel.ProfileChanged += async (_, _) => await ApplyProfile();
         _panel.CloseClicked += (_, _) => SetMenuOpen(false);
         _panel.OpenFolderClicked += (_, _) => OpenOutputFolder();
+        _panel.LanguageChanged += (_, _) =>
+        {
+            Loc.Apply(_settings.Language);
+            _video.PlaceholderText = Tr(_reconnect.Enabled ? "Waiting for the capture card..." : "Press Esc for the controls");
+            _video.Invalidate();
+            _panel.Build();
+        };
         _panel.SettingsTouched += (_, _) => { _autosave.Stop(); _autosave.Start(); };
         _panel.ShortcutsChanged += (_, note) =>
         {
@@ -290,7 +298,7 @@ public sealed class MainForm : Form
             _engine.SetWindow(_video.Handle, _video.ClientSize.Width, _video.ClientSize.Height);
 
         try { _panel.SetAdapters(await _engine.ListAdaptersAsync(), _settings.Adapter); }
-        catch (Exception ex) { _toast.Show("Could not list graphics cards: " + ex.Message, true); }
+        catch (Exception ex) { _toast.Show(Tr("Could not list graphics cards: {0}", ex.Message), true); }
         await RefreshEncoders();
 
         await RefreshDevices();
@@ -298,7 +306,7 @@ public sealed class MainForm : Form
         _loading = false;
         // Deferred to here rather than the constructor: RegisterHotKey needs a real window.
         ApplyGlobalShortcuts();
-        _ = CheckForUpdates();
+        if (!UpdateChecker.IsStoreInstall) _ = CheckForUpdates();
 
         if (_settings.AutoStart && _panel.SelectedDevice is { SymbolicLink.Length: > 0 } && _panel.SelectedFormat is not null)
             await ToggleStreaming(userAction: false);
@@ -309,7 +317,7 @@ public sealed class MainForm : Form
     private async Task RefreshEncoders()
     {
         try { _panel.SetEncoders(await _engine.ListEncodersAsync(), await _engine.PreviewAdapterAsync()); }
-        catch (Exception ex) { _toast.Show("Could not list encoders: " + ex.Message, true); }
+        catch (Exception ex) { _toast.Show(Tr("Could not list encoders: {0}", ex.Message), true); }
     }
 
     /// <summary>
@@ -326,7 +334,7 @@ public sealed class MainForm : Form
         if (_settings.NotifiedUpdate == latest) return;
         _settings.NotifiedUpdate = latest;
         _autosave.Start();
-        _toast.Show($"Ripsaw Studio {latest} is available. Download it from About.", false);
+        _toast.Show(Tr("Ripsaw Studio {0} is available. Download it from About.", latest), false);
     }
 
     protected override void OnResize(EventArgs e)
@@ -469,7 +477,7 @@ public sealed class MainForm : Form
     {
         List<VideoDeviceInfo> devices;
         try { devices = await _engine.EnumerateDevicesAsync(); }
-        catch (Exception ex) { _toast.Show("Could not list capture cards: " + ex.Message, true); return; }
+        catch (Exception ex) { _toast.Show(Tr("Could not list capture cards: {0}", ex.Message), true); return; }
 
         VideoDeviceInfo? preferred =
             devices.FirstOrDefault(d => d.SymbolicLink == _settings.VideoDeviceLink) ??
@@ -480,7 +488,7 @@ public sealed class MainForm : Form
         _panel.SetDevices(devices, preferred);
         if (devices.Count == 0)
         {
-            _toast.Show("No capture card found. Check the cable, and that no other app has the card open.", true);
+            _toast.Show(Tr("No capture card found. Check the cable, and that no other app has the card open."), true);
             _panel.SetFormats(Array.Empty<VideoFormat>(), -1);
             return;
         }
@@ -508,7 +516,7 @@ public sealed class MainForm : Form
             }
             catch (Exception ex)
             {
-                _toast.Show("Could not open " + device.Name + ": " + ex.Message, true);
+                _toast.Show(Tr("Could not open {0}: {1}", device.Name, ex.Message), true);
                 return;
             }
 
@@ -578,7 +586,7 @@ public sealed class MainForm : Form
         var format = _panel.SelectedFormat;
         if (device is null || device.SymbolicLink.Length == 0 || format is null)
         {
-            _toast.Show("Choose a capture card and a format first.", true);
+            _toast.Show(Tr("Choose a capture card and a format first."), true);
             return;
         }
 
@@ -620,7 +628,7 @@ public sealed class MainForm : Form
     {
         _activeFormatKey = null;
         ShowStopped();
-        _video.PlaceholderText = "Waiting for the capture card...";
+        _video.PlaceholderText = Tr("Waiting for the capture card...");
         _reconnect.Start();
     }
 
@@ -645,8 +653,8 @@ public sealed class MainForm : Form
             if (_engine.IsStreaming)
             {
                 _reconnect.Stop();
-                _video.PlaceholderText = "Press Esc for the controls";
-                _toast.Show(match.Name + " is back", false);
+                _video.PlaceholderText = Tr("Press Esc for the controls");
+                _toast.Show(Tr("{0} is back", match.Name), false);
             }
         }
         catch { /* not back yet - try again on the next tick */ }
@@ -668,7 +676,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _toast.Show("Could not list audio devices: " + ex.Message, true);
+            _toast.Show(Tr("Could not list audio devices: {0}", ex.Message), true);
             return;
         }
 
@@ -694,6 +702,7 @@ public sealed class MainForm : Form
     {
         if (_loading) return;
         _engine.Audio.RestartIntervalMinutes = _settings.AudioRestartMinutes;
+        _engine.Audio.RecordDesktop = _settings.RecordDesktopAudio;
 
         var input = _panel.SelectedAudioIn;
         if (input is null) { _engine.Audio.Stop(); return; }
@@ -709,7 +718,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _toast.Show("Audio: " + ex.Message, true);
+            _toast.Show(Tr("Audio: {0}", ex.Message), true);
         }
 
         // The replay buffer is armed once there is a sound format to put in it.
@@ -726,8 +735,8 @@ public sealed class MainForm : Form
         _panel.ReloadFromSettings();
         _autosave.Start();
         _toast.Show(_settings.MicEnabled
-            ? _settings.MicMuted ? "Microphone muted" : "Microphone live"
-            : "No microphone is mixed in. Turn it on under Audio.", !_settings.MicEnabled);
+            ? _settings.MicMuted ? Tr("Microphone muted") : Tr("Microphone live")
+            : Tr("No microphone is mixed in. Turn it on under Recording > Audio."), !_settings.MicEnabled);
     }
 
     private void ToggleMute()
@@ -751,7 +760,7 @@ public sealed class MainForm : Form
     {
         _engine.FlushPipeline();
         RestartAudio();
-        _toast.Show("Video flushed and audio restarted", false);
+        _toast.Show(Tr("Video flushed and audio restarted"), false);
     }
 
     // ---- record / snapshot -------------------------------------------------------------------
@@ -776,7 +785,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _toast.Show("Recording: " + ex.Message, true);
+            _toast.Show(Tr("Recording: {0}", ex.Message), true);
             _panel.SetRecording(false);
             _recordLight.Stop();
         }
@@ -808,7 +817,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _toast.Show("Instant replay: " + ex.Message, true);
+            _toast.Show(Tr("Instant replay: {0}", ex.Message), true);
         }
         finally
         {
@@ -824,8 +833,8 @@ public sealed class MainForm : Form
         _panel.ReloadFromSettings();
         _autosave.Start();
         _toast.Show(_settings.ReplayEnabled
-            ? $"Instant replay on, keeping the last {_settings.ReplayBufferSeconds} s"
-            : "Instant replay off", false);
+            ? Tr("Instant replay on, keeping the last {0} s", _settings.ReplayBufferSeconds)
+            : Tr("Instant replay off"), false);
     }
 
     /// <summary>
@@ -840,7 +849,7 @@ public sealed class MainForm : Form
             Directory.CreateDirectory(target);
             System.Diagnostics.Process.Start("explorer.exe", target);
         }
-        catch (Exception ex) { _toast.Show("Could not open the folder: " + ex.Message, true); }
+        catch (Exception ex) { _toast.Show(Tr("Could not open the folder: {0}", ex.Message), true); }
     }
 
     private string CommonOutputRoot()
@@ -863,14 +872,14 @@ public sealed class MainForm : Form
 
     private async Task NextProfile()
     {
-        if (_settings.Profiles.Count < 2) { _toast.Show("There is only one profile.", false); return; }
+        if (_settings.Profiles.Count < 2) { _toast.Show(Tr("There is only one profile."), false); return; }
         int index = _settings.Profiles.FindIndex(p => p.Name == _settings.ActiveProfile);
         var next = _settings.Profiles[(index + 1) % _settings.Profiles.Count];
         _settings.SwitchProfile(next.Name);
         _panel.ReloadFromSettings();
         await ApplyProfile();
         _autosave.Start();
-        _toast.Show("Profile: " + next.Name, false);
+        _toast.Show(Tr("Profile: {0}", next.Name), false);
     }
 
     /// <summary>
@@ -909,7 +918,7 @@ public sealed class MainForm : Form
             _panel.RefreshRecent();
             ShowCapture(path, RecentKind.Screenshot);
         }
-        catch (Exception ex) { _toast.Show("Screenshot: " + ex.Message, true); }
+        catch (Exception ex) { _toast.Show(Tr("Screenshot: {0}", ex.Message), true); }
     }
 
     private async Task SwitchAdapter()
@@ -922,7 +931,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _toast.Show("Could not switch graphics card: " + ex.Message, true);
+            _toast.Show(Tr("Could not switch graphics card: {0}", ex.Message), true);
         }
     }
 
@@ -930,17 +939,17 @@ public sealed class MainForm : Form
     {
         try
         {
-            _toast.Show("Measuring for 10 seconds, keep playing normally...", false);
+            _toast.Show(Tr("Measuring for 10 seconds, keep playing normally..."), false);
             string report = await _engine.RunTraceAsync(10);
             string path = Path.Combine(Path.GetDirectoryName(AppSettings.SettingsPath)!, "trace.txt");
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             await File.WriteAllTextAsync(path, report);
-            _toast.Show("Saved " + path, false);
+            _toast.Show(Tr("Saved {0}", path), false);
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            _toast.Show("Measuring failed: " + ex.Message, true);
+            _toast.Show(Tr("Measuring failed: {0}", ex.Message), true);
         }
     }
 
@@ -948,20 +957,20 @@ public sealed class MainForm : Form
     {
         if (_engine.IsRecording)
         {
-            _toast.Show("Stop the recording before testing encoders.", true);
+            _toast.Show(Tr("Stop the recording before testing encoders."), true);
             return;
         }
         try
         {
-            _toast.Show("Testing encoders, this takes about half a minute...", false);
+            _toast.Show(Tr("Testing encoders, this takes about half a minute..."), false);
             string folder = Path.Combine(Path.GetTempPath(), "RipsawStudio", "encoder-test");
             string report = await Task.Run(() => EncoderSelfTest.Run(folder));
-            _toast.Show("Encoder test finished", false);
+            _toast.Show(Tr("Encoder test finished"), false);
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(report) { UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            _toast.Show("Encoder test failed: " + ex.Message, true);
+            _toast.Show(Tr("Encoder test failed: {0}", ex.Message), true);
         }
     }
 
@@ -969,14 +978,14 @@ public sealed class MainForm : Form
     {
         try
         {
-            _toast.Show("Collecting a report...", false);
+            _toast.Show(Tr("Collecting a report..."), false);
             string path = await Diagnostics.WriteAsync(_engine, _settings);
-            _toast.Show("Saved " + path, false);
+            _toast.Show(Tr("Saved {0}", path), false);
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            _toast.Show("Report failed: " + ex.Message, true);
+            _toast.Show(Tr("Report failed: {0}", ex.Message), true);
         }
     }
 
@@ -994,8 +1003,10 @@ public sealed class MainForm : Form
             : stats.SecondsSinceFrame > 1.5 ? SignalStrip.State.NoSignal
             : SignalStrip.State.Live;
         string detail = recording
-            ? $"{stats.RecordingEncoder}   {FormatBytes(stats.RecordingBytes)}" + (stats.FreeDiskBytes >= 0 ? $" written, {FormatBytes(stats.FreeDiskBytes)} free" : "")
-            : _engine.IsReplayArmed ? $"Replay ready: {stats.ReplayBufferedSeconds:0} s" : "";
+            ? $"{stats.RecordingEncoder}   " + (stats.FreeDiskBytes >= 0
+                ? Tr("{0} written, {1} free", FormatBytes(stats.RecordingBytes), FormatBytes(stats.FreeDiskBytes))
+                : FormatBytes(stats.RecordingBytes))
+            : _engine.IsReplayArmed ? Tr("Replay ready: {0} s", stats.ReplayBufferedSeconds.ToString("0")) : "";
         _panel.SetSignal(state,
             stats.Width > 0 ? $"{stats.Width}×{stats.Height}" : "",
             streaming ? $"{stats.PresentFps:0}" : "",
@@ -1004,20 +1015,22 @@ public sealed class MainForm : Form
 
         _panel.SetReplayState(stats.ReplayArmed, _replaySaving);
         _panel.SetReplayState(stats.ReplayArmed
-            ? $"Ready: {stats.ReplayBufferedSeconds:0} of {_settings.ReplayBufferSeconds} s kept.\n" +
-              $"{ShortcutLabel(ShortcutAction.SaveReplay)} saves the last {_settings.ReplaySaveSeconds} s."
+            ? Tr("Ready: {0} of {1} s kept.", stats.ReplayBufferedSeconds.ToString("0"), _settings.ReplayBufferSeconds) + "\n" +
+              Tr("{0} saves the last {1} s.", ShortcutLabel(ShortcutAction.SaveReplay), _settings.ReplaySaveSeconds)
             : stats.ReplayError is { Length: > 0 } error
-                ? "Stopped: " + error
+                ? Tr("Stopped: {0}", error)
                 : _settings.ReplayEnabled
-                    ? "Waiting for the preview to start."
-                    : $"Off. {ShortcutLabel(ShortcutAction.ReplayToggle)} turns it on.");
+                    ? Tr("Waiting for the preview to start.")
+                    : Tr("Off. {0} turns it on.", ShortcutLabel(ShortcutAction.ReplayToggle)));
 
         _panel.SetLiveStatus(streaming, streaming
-            ? stats.Width > 0 ? $"On: {stats.Width}×{stats.Height}, {stats.CaptureFps:0} fps in, {stats.PresentFps:0} on screen" : "On"
-            : "Off");
+            ? stats.Width > 0
+                ? Tr("On: {0}, {1} fps in, {2} on screen", $"{stats.Width}×{stats.Height}", stats.CaptureFps.ToString("0"), stats.PresentFps.ToString("0"))
+                : Tr("On")
+            : Tr("Off"));
         _panel.SetRecordState(recording
-            ? $"Recording {Path.GetFileName(_engine.RecordingPath)} with {stats.RecordingEncoder}"
-            : $"Not recording. {ShortcutLabel(ShortcutAction.RecordToggle)} starts and stops a recording.");
+            ? Tr("Recording {0} with {1}", Path.GetFileName(_engine.RecordingPath), stats.RecordingEncoder)
+            : Tr("Not recording. {0} starts and stops a recording.", ShortcutLabel(ShortcutAction.RecordToggle)));
 
         if (stats.Width == 0) return;
         string line1 = $"{stats.Width}x{stats.Height} {stats.Format}  " +
@@ -1104,8 +1117,7 @@ public sealed class MainForm : Form
         _globalHotkeys.Apply(wanted, _shortcuts);
 
         if (quiet || !wanted || _globalHotkeys.Rejected.Count == 0) return;
-        _toast.Show("Another program already uses " + string.Join(", ", _globalHotkeys.Rejected) +
-                    ". Pick a different key for it.", true);
+        _toast.Show(Tr("Another program already uses {0}. Pick a different key for it.", string.Join(", ", _globalHotkeys.Rejected)), true);
     }
 
     private void OnKeyCaptureChanged(object? sender, EventArgs e) => ApplyGlobalShortcuts(quiet: true);

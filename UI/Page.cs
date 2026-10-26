@@ -1,18 +1,19 @@
 namespace RipsawStudio.UI;
 
 /// <summary>The pages of the control window.</summary>
-internal enum Page { Source, Picture, Audio, Recording, Replay, Library, Shortcuts, General, About }
+internal enum Page { Source, Picture, Sound, Video, RecordAudio, Replay, Library, Shortcuts, General, About }
 
-/// <summary>The five icons of the navigation bar. Each one holds one or more pages.</summary>
-internal enum Category { Capture, Recording, Keys, Settings, About }
+/// <summary>The icons of the navigation bar. Each one holds one or more pages.</summary>
+internal enum Category { Capture, Recording, Library, Keys, Settings, About }
 
 internal static class Pages
 {
-    /// <summary>Navigation-bar order, with the pages each category shows as tabs.</summary>
+    /// <summary>Navigation-bar order, with the pages each category shows as tabs. Labels are English keys for <see cref="Loc"/>.</summary>
     public static readonly (Category Category, string Label, (Page Page, string Label)[] Pages)[] Categories =
     {
-        (Category.Capture, "Capture", new[] { (Page.Source, "Source"), (Page.Picture, "Picture"), (Page.Audio, "Audio") }),
-        (Category.Recording, "Recording", new[] { (Page.Recording, "Recording"), (Page.Replay, "Instant replay"), (Page.Library, "Captures") }),
+        (Category.Capture, "Capture", new[] { (Page.Source, "Source"), (Page.Picture, "Picture"), (Page.Sound, "Sound") }),
+        (Category.Recording, "Recording", new[] { (Page.Video, "Video"), (Page.RecordAudio, "Audio"), (Page.Replay, "Instant replay") }),
+        (Category.Library, "Captures", new[] { (Page.Library, "Captures") }),
         (Category.Keys, "Shortcuts", new[] { (Page.Shortcuts, "Shortcuts") }),
         (Category.Settings, "Settings", new[] { (Page.General, "General") }),
         (Category.About, "About", new[] { (Page.About, "About") }),

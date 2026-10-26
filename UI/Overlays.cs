@@ -189,7 +189,7 @@ internal sealed class VolumeOverlay : Overlay
         FillGlass(g, Height / 2);
         using (var text = new SolidBrush(Theme.Text))
         using (var format = new StringFormat { LineAlignment = StringAlignment.Center })
-            g.DrawString(_muted ? "Muted" : $"{_volume * 100:0}%", Theme.BodyBold, text, new RectangleF(20, 0, 64, Height), format);
+            g.DrawString(_muted ? Tr("Muted") : $"{_volume * 100:0}%", Theme.BodyBold, text, new RectangleF(20, 0, 64, Height), format);
 
         var track = new Rectangle(86, Height / 2 - 2, Width - 86 - 22, 4);
         using (var path = FlatButton.Rounded(track, 2))
