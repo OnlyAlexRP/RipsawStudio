@@ -166,6 +166,10 @@ internal sealed class MicInput : IDisposable
 
     private double _resamplePosition;
 
+    private readonly int _cushion;
+    private readonly string _label;
+    private bool _refilling;
+
     private float _peak;
     private long _lastDataTicks;
 
@@ -182,8 +186,10 @@ internal sealed class MicInput : IDisposable
     /// Opens the endpoint. <paramref name="delayMs"/> primes the FIFO with silence, which is
     /// how the mic is pushed later relative to the game sound without a separate delay line.
     /// </summary>
-    public MicInput(string deviceId, int sampleRate, int channels, int latencyMs, int delayMs)
+    public MicInput(string deviceId, int sampleRate, int channels, int latencyMs, int delayMs, bool loopback = false,
+                    string label = "Microphone")
     {
+        _label = label;
         _sampleRate = sampleRate;
         _channels = Math.Max(1, channels);
 
@@ -192,6 +198,7 @@ internal sealed class MicInput : IDisposable
 
         int priming = Math.Clamp(delayMs, 0, 1000) * _sampleRate / 1000 * _channels;
         if (priming > 0) WriteRing(new float[priming], priming);
+        _cushion = priming;
 
         // A mic that will not open is retried on every audio restart, so a half-opened one
         // has to give its endpoint back here rather than wait for the GC.
@@ -199,9 +206,11 @@ internal sealed class MicInput : IDisposable
         {
             using var enumerator = new MMDeviceEnumerator();
             _device = enumerator.GetDevice(deviceId)
-                ?? throw new InvalidOperationException("That microphone no longer exists.");
+                ?? throw new InvalidOperationException(Tr("That microphone no longer exists."));
 
-            _capture = new WasapiCapture(_device, true, Math.Max(5, latencyMs / 2));
+            _capture = loopback
+                ? new LoopbackCapture(_device, 40)
+                : new WasapiCapture(_device, true, Math.Max(5, latencyMs / 2));
             _sourceFormat = _capture.WaveFormat;
             _capture.DataAvailable += OnDataAvailable;
             _capture.RecordingStopped += OnRecordingStopped;
@@ -351,6 +360,13 @@ internal sealed class MicInput : IDisposable
             int allowed = maxBufferedMs * _sampleRate / 1000 * _channels;
             if (allowed > 0 && _fill > allowed + wanted) Drop(_fill - allowed);
 
+            if (_refilling && _fill < _cushion + wanted)
+            {
+                Array.Clear(destination, 0, wanted);
+                return;
+            }
+            _refilling = false;
+
             // Copied as at most two runs rather than a modulo per sample: this is the game
             // audio callback, and it runs for every block whether the mic is speaking or not.
             int available = Math.Min(wanted, _fill);
@@ -364,6 +380,7 @@ internal sealed class MicInput : IDisposable
 
             _readIndex = (_readIndex + available) % _ring.Length;
             _fill -= available;
+            if (available < wanted && _cushion > 0) _refilling = true;
         }
     }
 
@@ -385,7 +402,7 @@ internal sealed class MicInput : IDisposable
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
     {
         IsRunning = false;
-        if (e.Exception is not null) Status?.Invoke(this, "Microphone stopped: " + e.Exception.Message);
+        if (e.Exception is not null) Status?.Invoke(this, Tr("{0} stopped: {1}", Tr(_label), e.Exception.Message));
     }
 
     public void Dispose()
@@ -402,5 +419,11 @@ internal sealed class MicInput : IDisposable
         try { _device?.Dispose(); } catch { }
         _device = null;
         lock (_lock) { _fill = 0; _readIndex = 0; }
+    }
+
+    private sealed class LoopbackCapture(MMDevice device, int bufferMs) : WasapiCapture(device, false, bufferMs)
+    {
+        protected override AudioClientStreamFlags GetAudioClientStreamFlags() =>
+            AudioClientStreamFlags.Loopback | base.GetAudioClientStreamFlags();
     }
 }

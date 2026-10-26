@@ -40,6 +40,11 @@ public sealed class AudioMonitor : IDisposable
     private VolumeSampleProviderEx? _volume;
     private System.Threading.Timer? _watchdog;
     private MicInput? _mic;
+    private MicInput? _desktop;
+
+    private const int DesktopCushionMs = 50;
+    private float[] _desktopFloat = Array.Empty<float>();
+    private byte[] _desktopBytes = Array.Empty<byte>();
 
     // Scratch for the mix, grown once rather than allocated in the audio callback.
     private float[] _mixFloat = Array.Empty<float>();
@@ -129,6 +134,8 @@ public sealed class AudioMonitor : IDisposable
     /// cannot see; a scheduled restart is the blunt fix for that.
     /// </summary>
     public int RestartIntervalMinutes { get; set; }
+
+    public bool RecordDesktop { get; set; }
 
     /// <summary>
     /// Peak level of the last block, 0..1, for the UI meter. Reads zero once packets stop,
@@ -224,7 +231,7 @@ public sealed class AudioMonitor : IDisposable
         // WasapiCapture/WasapiOut do not take ownership of the MMDevice, so these are
         // tracked and released on Stop. Without that, every restart leaked an endpoint.
         var inDevice = enumerator.GetDevice(inputDeviceId)
-            ?? throw new InvalidOperationException("That audio input no longer exists.");
+            ?? throw new InvalidOperationException(Tr("That audio input no longer exists."));
         _inDevice = inDevice;
 
         // A short capture buffer is what keeps the delay down; WASAPI still gives us
@@ -237,7 +244,7 @@ public sealed class AudioMonitor : IDisposable
         if (passthrough && !string.IsNullOrEmpty(outputDeviceId))
         {
             var outDevice = enumerator.GetDevice(outputDeviceId)
-                ?? throw new InvalidOperationException("That audio output no longer exists.");
+                ?? throw new InvalidOperationException(Tr("That audio output no longer exists."));
             _outDevice = outDevice;
             _buffer = new BufferedWaveProvider(CaptureFormat)
             {
@@ -253,6 +260,7 @@ public sealed class AudioMonitor : IDisposable
         }
 
         StartMic(mic);
+        if (RecordDesktop) StartDesktop(enumerator, outputDeviceId);
 
         _lastDataTicks = Environment.TickCount64;
         _startedTicks = _lastDataTicks;
@@ -260,7 +268,7 @@ public sealed class AudioMonitor : IDisposable
         IsRunning = true;
 
         _watchdog = new System.Threading.Timer(CheckAlive, null, 2000, 2000);
-        Status?.Invoke(this, $"Audio: {CaptureFormat.SampleRate / 1000.0:0.#} kHz, {CaptureFormat.Channels} ch");
+        Status?.Invoke(this, Tr("Audio: {0}", $"{CaptureFormat.SampleRate / 1000.0:0.#} kHz, {CaptureFormat.Channels} ch"));
     }
 
     /// <summary>
@@ -284,8 +292,46 @@ public sealed class AudioMonitor : IDisposable
         catch (Exception ex)
         {
             _mic = null;
-            Status?.Invoke(this, "Microphone: " + ex.Message);
+            Status?.Invoke(this, Tr("Microphone: {0}", ex.Message));
         }
+    }
+
+    private void StartDesktop(MMDeviceEnumerator enumerator, string? outputDeviceId)
+    {
+        if (CaptureFormat is null) return;
+        try
+        {
+            string id = outputDeviceId ?? DefaultOutputId(enumerator);
+            _desktop = new MicInput(id, CaptureFormat.SampleRate, CaptureFormat.Channels,
+                                    TargetLatencyMs, DesktopCushionMs, loopback: true, label: "PC sound");
+            _desktop.Status += (_, m) => Status?.Invoke(this, m);
+        }
+        catch (Exception ex)
+        {
+            _desktop = null;
+            Status?.Invoke(this, Tr("PC sound: {0}", ex.Message));
+        }
+    }
+
+    private static string DefaultOutputId(MMDeviceEnumerator enumerator)
+    {
+        using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
+        return device.ID;
+    }
+
+    private byte[] ReadDesktop(MicInput desktop, byte[] source, int count, WaveFormat format)
+    {
+        int channels = format.Channels;
+        int frames = format.BlockAlign > 0 ? count / format.BlockAlign : 0;
+        int samples = frames * channels;
+        if (samples == 0 || format.BlockAlign != channels * (format.BitsPerSample / 8)) return source;
+
+        if (_desktopFloat.Length < samples) _desktopFloat = new float[samples * 2];
+        if (_desktopBytes.Length < count) _desktopBytes = new byte[count * 2];
+
+        desktop.Read(_desktopFloat, frames, DesktopCushionMs + 60);
+        PcmConvert.FromFloat(_desktopFloat, samples, format, _desktopBytes);
+        return _desktopBytes;
     }
 
     /// <summary>
@@ -400,11 +446,23 @@ public sealed class AudioMonitor : IDisposable
 
         // The recording always gets the mix; the monitor only does if you asked to hear yourself.
         byte[] recorded = source;
+        byte[] monitored = source;
         var mic = _mic;
-        if (mic is not null && format is not null && mic.IsRunning)
-            recorded = MixMic(mic, source, e.BytesRecorded, format);
-        else if (_duckGain != 1f) { _duckGain = 1f; _duckHoldRemainingMs = 0f; }
-        byte[] monitored = Mic.Monitor ? recorded : source;
+        var desktop = _desktop;
+        bool micLive = mic is not null && format is not null && mic.IsRunning;
+        if (desktop is not null && format is not null && desktop.IsRunning)
+        {
+            bool micViaLoopback = Mic.Monitor && _buffer is not null;
+            if (micLive && micViaLoopback) monitored = MixMic(mic!, source, e.BytesRecorded, format);
+            recorded = ReadDesktop(desktop, source, e.BytesRecorded, format);
+            if (micLive && !micViaLoopback) recorded = MixMic(mic!, recorded, e.BytesRecorded, format);
+        }
+        else
+        {
+            if (micLive) recorded = MixMic(mic!, source, e.BytesRecorded, format!);
+            if (Mic.Monitor) monitored = recorded;
+        }
+        if (!micLive && _duckGain != 1f) { _duckGain = 1f; _duckHoldRemainingMs = 0f; }
 
         var buffer = _buffer;
         if (buffer is not null)
@@ -452,7 +510,7 @@ public sealed class AudioMonitor : IDisposable
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
     {
         if (e.Exception is not null)
-            Status?.Invoke(this, "Audio capture stopped: " + e.Exception.Message);
+            Status?.Invoke(this, Tr("Audio capture stopped: {0}", e.Exception.Message));
     }
 
     /// <summary>
@@ -473,8 +531,8 @@ public sealed class AudioMonitor : IDisposable
         try
         {
             Status?.Invoke(this, silent
-                ? $"No audio for {silentMs / 1000}s, restarting the audio device..."
-                : "Scheduled audio restart");
+                ? Tr("No audio for {0} s, restarting the audio device...", silentMs / 1000)
+                : Tr("Scheduled audio restart"));
             var input = InputDeviceId;
             var output = OutputDeviceId;
             if (input is not null)
@@ -482,7 +540,7 @@ public sealed class AudioMonitor : IDisposable
         }
         catch (Exception ex)
         {
-            Status?.Invoke(this, "Audio restart failed: " + ex.Message);
+            Status?.Invoke(this, Tr("Audio restart failed: {0}", ex.Message));
         }
         finally { _restarting = false; }
     }
@@ -503,6 +561,8 @@ public sealed class AudioMonitor : IDisposable
         _watchdog = null;
         _mic?.Dispose();
         _mic = null;
+        _desktop?.Dispose();
+        _desktop = null;
         if (_capture is not null)
         {
             _capture.DataAvailable -= OnDataAvailable;
