@@ -307,7 +307,7 @@ public sealed class CaptureEngine : IDisposable
                 _presenter.SetPicture(_picture);
                 if (_pendingHwnd != IntPtr.Zero)
                     _presenter.AttachWindow(_pendingHwnd, _pendingWidth, _pendingHeight);
-                Status?.Invoke(this, "Graphics: " + _presenter.AdapterDetail);
+                Status?.Invoke(this, Tr("Graphics: {0}", _presenter.AdapterDetail));
             }
             if (wasStreaming && device is not null && format is not null) StartCore(device, format);
             return true;
@@ -385,7 +385,7 @@ public sealed class CaptureEngine : IDisposable
     public Task StartRecordingAsync(string path) =>
         Invoke(() =>
         {
-            if (!_streaming) throw new InvalidOperationException("Start the preview before recording.");
+            if (!_streaming) throw new InvalidOperationException(Tr("Start the preview before recording."));
             if (IsRecording) return true;
             var free = FreeBytes(path);
             if (free >= 0 && free < MinFreeBytes * 2)
@@ -395,7 +395,7 @@ public sealed class CaptureEngine : IDisposable
             _recordPart = 1;
             StartRecorderCore(path);
             _recordStartTicks = _clock.Elapsed.Ticks;
-            Status?.Invoke(this, $"Recording with {_recordingEncoder}");
+            Status?.Invoke(this, Tr("Recording with {0}", _recordingEncoder));
             return true;
         });
 
@@ -422,7 +422,7 @@ public sealed class CaptureEngine : IDisposable
         _recordingEncoder = recorder.ActiveEncoder is { Length: > 0 } active && active != "unknown"
             ? $"{active} {(plan.Codec == VideoCodec.Hevc ? "HEVC" : "H.264")}"
             : plan.Description;
-        if (recorder.AudioProblem is { } problem) Failed?.Invoke(this, "Recording: " + problem);
+        if (recorder.AudioProblem is { } problem) Failed?.Invoke(this, Tr("Recording: {0}", problem));
         lock (_recordLock) _recorder = recorder;
         _lastDiskCheck = 0;
     }
@@ -445,7 +445,7 @@ public sealed class CaptureEngine : IDisposable
         var task = Task.Run(() =>
         {
             try { recorder.Stop(); }
-            catch (Exception ex) { Failed?.Invoke(this, "Finalising the recording failed: " + ex.Message); }
+            catch (Exception ex) { Failed?.Invoke(this, Tr("Finalising the recording failed: {0}", ex.Message)); }
             return path;
         });
         lock (_finalizing)
@@ -556,7 +556,7 @@ public sealed class CaptureEngine : IDisposable
             // Record page would sit there saying it was waiting for a preview that is running.
             _replayEnabled = false;
             _replayError = ex.Message;
-            Failed?.Invoke(this, "Instant replay could not start: " + ex.Message);
+            Failed?.Invoke(this, Tr("Instant replay could not start: {0}", ex.Message));
         }
     }
 
@@ -570,7 +570,7 @@ public sealed class CaptureEngine : IDisposable
         var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         Post(() =>
         {
-            if (!_streaming) { tcs.TrySetException(new InvalidOperationException("No live picture to capture.")); return; }
+            if (!_streaming) { tcs.TrySetException(new InvalidOperationException(Tr("No live picture to capture."))); return; }
             _screenshots.Add((path, tcs));
         });
         return tcs.Task;
@@ -588,7 +588,7 @@ public sealed class CaptureEngine : IDisposable
         {
             if (!_streaming)
             {
-                tcs.TrySetException(new InvalidOperationException("Start the preview before tracing."));
+                tcs.TrySetException(new InvalidOperationException(Tr("Start the preview before tracing.")));
                 return;
             }
             _trace = new PerfTrace(_clock.Elapsed.Ticks, seconds, _framesDropped, tcs);
@@ -645,7 +645,7 @@ public sealed class CaptureEngine : IDisposable
         }
         catch (Exception ex)
         {
-            Failed?.Invoke(this, "Direct3D could not start: " + ex.Message);
+            Failed?.Invoke(this, Tr("Direct3D could not start: {0}", ex.Message));
         }
 
         long lastStats = 0;
@@ -708,7 +708,7 @@ public sealed class CaptureEngine : IDisposable
 
             if (flags.HasFlag(Mf.SourceReaderFlags.EndOfStream))
             {
-                Failed?.Invoke(this, "The capture device stopped sending video (unplugged, or claimed by another app).");
+                Failed?.Invoke(this, Tr("The capture device stopped sending video (unplugged, or claimed by another app)."));
                 StopCore();
                 StreamLost?.Invoke(this, EventArgs.Empty);
                 return;
@@ -739,7 +739,7 @@ public sealed class CaptureEngine : IDisposable
                     if (contested) clone = MfHelpers.CloneSample(sample);
                     _replay.WriteVideo(clone ?? sample, _clock.Elapsed.Ticks, frameDuration);
                 }
-                catch (Exception ex) { Failed?.Invoke(this, "Instant replay: " + ex.Message); }
+                catch (Exception ex) { Failed?.Invoke(this, Tr("Instant replay: {0}", ex.Message)); }
                 finally { MfHelpers.Release(clone); }
             }
 
@@ -887,7 +887,7 @@ public sealed class CaptureEngine : IDisposable
             }
             catch (Exception ex)
             {
-                Failed?.Invoke(this, "Display: " + ex.Message);
+                Failed?.Invoke(this, Tr("Display: {0}", ex.Message));
             }
             finally
             {
@@ -912,7 +912,7 @@ public sealed class CaptureEngine : IDisposable
         _fpsDen = den;
         _outputSubtype = subtype;
         if (_presenter is not null) _presenter.SoftwareStrideHint = _source?.DefaultStride ?? 0;
-        Status?.Invoke(this, $"Input changed to {w}x{h} @ {(double)num / den:0.##} Hz");
+        Status?.Invoke(this, Tr("Input changed to {0} @ {1} Hz", $"{w}x{h}", ((double)num / den).ToString("0.##")));
         SourceFormatChanged?.Invoke(this, EventArgs.Empty);
 
         // One file cannot change resolution midway, so the take carries on in a new file
@@ -931,7 +931,7 @@ public sealed class CaptureEngine : IDisposable
                     Recording = true,
                     Path = next,
                     FinishedPath = finished,
-                    Message = $"Input changed to {w}x{h}, recording continues in {Path.GetFileName(next)}",
+                    Message = Tr("Input changed to {0}, recording continues in {1}", $"{w}x{h}", Path.GetFileName(next)),
                 });
             }
             catch (Exception ex)
@@ -940,7 +940,7 @@ public sealed class CaptureEngine : IDisposable
                 {
                     Recording = false,
                     FinishedPath = finished,
-                    Message = "Recording stopped: the input changed and a new file could not be started (" + ex.Message + ")",
+                    Message = Tr("Recording stopped: the input changed and a new file could not be started ({0})", ex.Message),
                     IsError = true,
                 });
             }
@@ -950,7 +950,7 @@ public sealed class CaptureEngine : IDisposable
         if (_replay.IsRunning)
         {
             _replay.Stop();
-            Status?.Invoke(this, "Instant replay buffer cleared: the input resolution changed.");
+            Status?.Invoke(this, Tr("Instant replay buffer cleared: the input resolution changed."));
         }
         ApplyReplayState();
     }
@@ -1001,7 +1001,7 @@ public sealed class CaptureEngine : IDisposable
             _source = VideoSource.Open(device, null);
             _softwareFallback = true;
             _source.SetFormat(format, Mf.MFVideoFormat_RGB32);
-            Status?.Invoke(this, "GPU path unavailable for this format, using the software path.");
+            Status?.Invoke(this, Tr("GPU path unavailable for this format, using the software path."));
         }
 
         _formatInUse = format;
@@ -1026,8 +1026,8 @@ public sealed class CaptureEngine : IDisposable
         _lastFrameTicks = _clock.Elapsed.Ticks;
         _streaming = true;
         ApplyReplayState();
-        Status?.Invoke(this, $"Preview on: {_frameWidth}x{_frameHeight} {Mf.DescribeSubtype(_outputSubtype)}" +
-                             (_softwareFallback ? " (software)" : " (GPU)"));
+        Status?.Invoke(this, Tr("Preview on: {0}", $"{_frameWidth}x{_frameHeight} {Mf.DescribeSubtype(_outputSubtype)}") +
+                             (_softwareFallback ? " (" + Tr("software") + ")" : " (GPU)"));
     }
 
     private void StopCore()
@@ -1040,7 +1040,7 @@ public sealed class CaptureEngine : IDisposable
         EndRecordingUnasked("Recording stopped: the preview stopped.", isError: false);
         _source?.Flush();
         foreach (var (_, completion) in _screenshots)
-            completion.TrySetException(new InvalidOperationException("The preview stopped."));
+            completion.TrySetException(new InvalidOperationException(Tr("The preview stopped.")));
         _screenshots.Clear();
     }
 
@@ -1053,13 +1053,13 @@ public sealed class CaptureEngine : IDisposable
         int stride;
         try
         {
-            if (_presenter is null) throw new InvalidOperationException("The renderer is not ready.");
+            if (_presenter is null) throw new InvalidOperationException(Tr("The renderer is not ready."));
             lock (_presenterLock) (pixels, stride) = _presenter.ReadFrameBgra(sample, width, height);
         }
         catch (Exception ex)
         {
             foreach (var (_, completion) in requests) completion.TrySetException(ex);
-            Failed?.Invoke(this, "Screenshot failed: " + ex.Message);
+            Failed?.Invoke(this, Tr("Screenshot failed: {0}", ex.Message));
             return;
         }
 
@@ -1086,7 +1086,7 @@ public sealed class CaptureEngine : IDisposable
                 catch (Exception ex)
                 {
                     completion.TrySetException(ex);
-                    Failed?.Invoke(this, "Screenshot failed: " + ex.Message);
+                    Failed?.Invoke(this, Tr("Screenshot failed: {0}", ex.Message));
                 }
             }
         });
@@ -1097,7 +1097,7 @@ public sealed class CaptureEngine : IDisposable
         if (_replay.IsRunning)
         {
             try { _replay.WriteAudio(e.Buffer, e.Count, e.Format, _clock.Elapsed.Ticks); }
-            catch (Exception ex) { Failed?.Invoke(this, "Instant replay: " + ex.Message); }
+            catch (Exception ex) { Failed?.Invoke(this, Tr("Instant replay: {0}", ex.Message)); }
         }
 
         if (!IsRecording) return;
@@ -1105,7 +1105,7 @@ public sealed class CaptureEngine : IDisposable
         {
             if (_recorder is not { IsRecording: true } recorder) return;
             try { recorder.WriteAudio(e.Buffer, e.Count, e.Format, _clock.Elapsed.Ticks); }
-            catch (Exception ex) { Failed?.Invoke(this, "Audio write failed: " + ex.Message); }
+            catch (Exception ex) { Failed?.Invoke(this, Tr("Audio write failed: {0}", ex.Message)); }
         }
     }
 
