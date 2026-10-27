@@ -1,52 +1,66 @@
 # Ripsaw Studio
 
-Ripsaw Studio is a lightweight capture app for Windows built to work with virtually any capture card, from generic AliExpress units to Elgato and AVerMedia devices, without hunting for drivers or manufacturer software. Plug in your capture card, see your gameplay instantly, and record it, with nothing sitting in between.
+Ripsaw Studio is a lightweight capture app for Windows, built to work with virtually any capture card, from generic AliExpress units to Elgato and AVerMedia devices, without hunting for drivers or manufacturer software. Plug your card in, see your gameplay, record it, with nothing sitting in between.
 
-The feed reaches your screen the instant it arrives, since Ripsaw Studio doesn't introduce any delay of its own. VSync can be toggled on or off to match your monitor and setup, fixing frame drops and freezing on cards like the Razer Ripsaw HD and keeping screen tearing out of your recordings, while color range control lets you switch between limited and full range to fix washed-out or crushed blacks so your feed always matches what your capture card is actually sending.
+The picture reaches your screen the moment it arrives. Ripsaw Studio adds no buffering of its own: frames go from the card to the GPU to the glass, and the app is paced by your display rather than by a queue. VSync can be turned off or on to match your setup, which fixes the frame drops and freezing some cards show (the Razer Ripsaw HD among them), and colour range control switches between limited and full range so washed-out or crushed blacks match what your card is actually sending.
 
-Instant Replay keeps the last few minutes of your gameplay running in the background at all times, ready to be saved as a clip the moment something worth keeping happens. Recording is built in as well, with full control over bitrate, so there's no need to route through OBS, though Ripsaw Studio still works perfectly as an OBS source when you want to stream instead.
+No wizard, no suite of tools you will never open. One job: getting your capture card's feed on screen and into a file, as directly as possible.
 
-No wizard, no bloated suite of tools you'll never open. Ripsaw Studio is built around one job: getting your capture card's feed on screen and into a recording, as directly as possible. Windows 10 and 11.
+## What it does
+
+- **Live preview** of any capture card Windows can see, at the card's own resolution and frame rate.
+- **Recording** with full control: H.264 or HEVC, your choice of encoder (NVIDIA NVENC, Intel Quick Sync, AMD AMF or the CPU, on whichever GPU you want), constant bitrate, variable bitrate or constant quality. Recordings are written as fragmented MP4 by default, so the file stays playable even if the PC crashes mid take.
+- **Instant Replay** keeps the last minutes of play in the background, ready to be saved as a clip the moment something worth keeping happens.
+- **Screenshots**, saved as soon as you press the key.
+- **Global shortcuts**: record, save a replay and take a screenshot from inside the game, without Ripsaw Studio being the focused window.
+- **Captures library**: every recording, replay and screenshot in one grid, with filters, favourites, renaming, and deletion to the Recycle Bin.
+- **Sound**: hear the game through your speakers or headset with adjustable latency, mix in a microphone with its own delay, or record the PC's own output instead so voice chat ends up in the clip.
+- **Picture controls**: scaling, aspect ratio, brightness, contrast, saturation, colour range, and a smoothing pass for cheap cards that produce blocky pixels.
+- **Profiles**: one per console, each with its own card, format, picture and sound settings.
+- **Interface in English, French, Spanish, German and Russian**, following Windows automatically.
+
+Streaming is not part of it, and is not meant to be. Ripsaw Studio works in OBS as a **Game Capture** source when you want to stream. Window Capture will not pick its picture up, so point OBS at the Ripsaw Studio window with Game Capture instead.
 
 ## Download
 
-Go to the [Releases page](https://github.com/OnlyAlexRP/RipsawStudio/releases) and download **RipsawStudio\_v1.6.zip** from the latest release.
+Download **RipsawStudio_v1.6.zip** from the [Releases page](https://github.com/OnlyAlexRP/RipsawStudio/releases/latest).
 
-## Website
+Unzip it wherever you like, open the `RipsawStudio` folder and run `RipsawStudio.exe`. There is nothing to install and nothing is written outside your user folder, so you can keep it on a USB drive if you want. Keep the folder intact: the app loads the files next to it.
 
-More info: https://onlyalexrp.itch.io/ripsaw-studio
+The preview starts on its own when a card is found. If the window stays empty, open **Capture > Source** and pick your card and its format.
+
+## If Windows warns you about the app
+
+Ripsaw Studio is a small, freely distributed app that is not code signed, so Windows does not recognise it yet. Nothing is wrong with your download.
+
+- **"Windows protected your PC" (SmartScreen)**: click **More info**, then **Run anyway**.
+- **"Smart App Control has blocked a potentially dangerous app"**: Smart App Control offers no exception for a single app, so it has to be switched off to run unsigned software. Open the Start menu, search for **Windows Security**, go to **App & browser control**, then **Smart App Control settings**, and set it to **Off**. Bear in mind this is a system wide protection, so decide for yourself whether you want to turn it off.
+
+If you would rather leave your security settings alone, Ripsaw Studio is also available on the [Microsoft Store](https://apps.microsoft.com/detail/9P9W4XR5XRPS), where the build is signed and verified, so it installs without any of this.
+
+## Where your files go
+
+- Recordings, replays and screenshots: in your Videos folder, under `Ripsaw Studio`, each in its own subfolder. All three are configurable.
+- Settings, and a crash log if one is ever written: `%APPDATA%\RipsawStudio`.
+
+Nothing else is touched, and nothing runs when the app is closed.
+
+## A word on latency
+
+Ripsaw Studio does not delay your picture, but it cannot remove the delay your capture card creates before the frame ever reaches the PC. That delay is part of the hardware and ranges from barely noticeable to well over a tenth of a second depending on the model. If the feed still feels late, **Settings > Measure** records every frame for ten seconds and writes a plain report telling you where the time actually goes.
+
+For the lowest latency: leave VSync off, prefer an uncompressed format (NV12 or YUY2 rather than MJPG, which has to be decoded first), and keep the sound latency as low as your setup tolerates.
 
 ## Requirements
 
-Windows 10 / 11
+- Windows 10 or Windows 11, 64 bit.
+- A capture card Windows already recognises, which covers practically every USB and PCIe card sold today.
 
-## Information required
+## Links
 
-With the use and assistance of Claude AI for code restructuring prior to publication and for optimization.
+- Releases: https://github.com/OnlyAlexRP/RipsawStudio/releases
+- Website: https://onlyalexrp.itch.io/ripsaw-studio
 
-## If Windows 11 Smart App Control Blocking the Application
+## Development
 
-
-
-If Windows 11 blocks the application with a message stating that "Smart App Control has blocked a potentially dangerous app", follow these steps:
-
-
-
-1 - Open the Start Menu and search for Windows Security.
-
-
-
-2 - Open Windows Security and select App \& browser control.
-
-
-
-3 - Click Smart App Control settings.
-
-
-
-4 - Select Off to disable Smart App Control.
-
-
-
-5 - Try launching the application again.
-
+Written by OnlyAlexRP, with the assistance of Claude AI for code restructuring and optimisation prior to publication.
