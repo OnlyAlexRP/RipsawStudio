@@ -23,11 +23,17 @@ Streaming is not part of it, and is not meant to be. Ripsaw Studio works in OBS 
 
 ## Download
 
-Download **RipsawStudio_v1.6.zip** from the [Releases page](https://github.com/OnlyAlexRP/RipsawStudio/releases/latest).
+**1. Install Microsoft's .NET 8 Desktop Runtime**, once and for all. It is a free Microsoft component that many Windows apps share, and you may well have it already.
 
-Unzip it wherever you like, open the `RipsawStudio` folder and run `RipsawStudio.exe`. There is nothing to install and nothing is written outside your user folder, so you can keep it on a USB drive if you want. Keep the folder intact: the app loads the files next to it.
+[Download it here](https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe) (direct from Microsoft), or pick **.NET Desktop Runtime 8.0, x64** yourself on the [official page](https://dotnet.microsoft.com/download/dotnet/8.0). Run the installer, click through it, and that is the last time you will think about it.
+
+**2. Download RipsawStudio_v1.6.zip** from the [Releases page](https://github.com/OnlyAlexRP/RipsawStudio/releases/latest).
+
+Unzip it wherever you like, open the `RipsawStudio` folder and run `RipsawStudio.exe`. Ripsaw Studio itself installs nothing and writes nothing outside your user folder, so you can keep it on a USB drive if you want. Keep the folder intact: the app loads the files next to it.
 
 The preview starts on its own when a card is found. If the window stays empty, open **Capture > Source** and pick your card and its format.
+
+If double clicking the app does nothing, or Windows offers to search online for a missing component, step 1 is what is missing.
 
 ## If Windows warns you about the app
 
@@ -54,6 +60,7 @@ For the lowest latency: leave VSync off, prefer an uncompressed format (NV12 or 
 ## Requirements
 
 - Windows 10 or Windows 11, 64 bit.
+- Microsoft .NET 8 Desktop Runtime, free, installed once (see Download above). The Microsoft Store build carries it, so it needs nothing.
 - A capture card Windows already recognises, which covers practically every USB and PCIe card sold today.
 
 ## Links
